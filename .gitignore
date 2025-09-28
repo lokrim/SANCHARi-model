@@ -1,0 +1,7 @@
+geotiffs
+predicted
+test-images
+venv
+best_model.pth
+__pycache__
+instructions.md
