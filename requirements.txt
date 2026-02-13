@@ -16,3 +16,4 @@ pydantic
 pyproj
 pandas
 prettytable
+earthengine-api
