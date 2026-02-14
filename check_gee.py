@@ -1,3 +1,16 @@
+"""
+Sanchari V3 - GEE Diagnostics (check_gee.py)
+
+A unified diagnostic tool to verify Google Earth Engine (GEE) setup.
+Checks:
+1.  Authentication Credentials (~/.config/earthengine/credentials).
+2.  Project Configuration (Imports from `main_gee_v3.py`).
+3.  Initialization (`ee.Initialize`).
+4.  Data Access (Probe NAIP, Sentinel-2, Landsat, and Hybrid layers).
+
+Usage:
+    python check_gee.py
+"""
 
 import ee
 import os

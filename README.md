@@ -55,7 +55,7 @@ This project has evolved significantly to address the challenges of satellite im
 
 1.  **Clone the Repository**:
     ```bash
-    git clone https://github.com/yourusername/sanchari-model.git
+    git clone https://github.com/lokrim/sanchari-model.git
     cd sanchari-model
     ```
 
@@ -137,6 +137,34 @@ curl -X POST "http://localhost:8000/predict" \
      -d '{"latitude": 30.2241, "longitude": -97.7816}'
 ```
 *Response: GeoJSON FeatureCollection of road centerlines.*
+
+### 5. Google Earth Engine Inference (NEW 🌍)
+Run inference directly on satellite imagery fetched from Google Earth Engine (No local GeoTIFFs needed!).
+
+**Prerequisites:**
+1.  Install GEE API: `pip install earthengine-api`
+2.  Authenticate: `earthengine authenticate`
+
+**A. Real-time API Server:**
+```bash
+python main_gee_v3.py --debug
+```
+*   Runs on port **8001**.
+*   Fetches NAIP/Sentinel-2 imagery dynamically.
+*   Usage: Same cURL command as above, but to port 8001.
+
+**B. Batch Testing (Random US Cities):**
+Generates predictions for 10 random locations near major US cities.
+```bash
+python predict_gee_v3.py
+```
+*   Outputs to `predictedv3/` (Images) and `output-geojson/` (Vectors).
+
+**C. Diagnostics:**
+Check if your GEE authentication and data access are working.
+```bash
+python check_gee.py
+```
 
 ---
 

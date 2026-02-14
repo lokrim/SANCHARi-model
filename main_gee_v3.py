@@ -1,3 +1,29 @@
+"""
+Sanchari V3 - GEE Inference API Server (main_gee_v3.py)
+
+This script provides a FastAPI-based inference server that fetches satellite imagery 
+directly from Google Earth Engine (GEE), negating the need for local GeoTIFF storage.
+
+Key Features:
+- Integrates `earthengine-api` to fetch 1024x1024 RGB crops on demand.
+- Supports NAIP (0.6m US) and Sentinel-2 (10m Global) via `fetch_gee_image`.
+- Computes precise Web Mercator (EPSG:3857) to WGS84 (EPSG:4326) transforms 
+  locally to ensure the output GeoJSON vectors align perfectly with the map.
+- Runs the full V3 Model Pipeline:
+    1. Sliding Window Inference with TTA (4-way flip/rotate).
+    2. Thresholding (0.3).
+    3. Morphology (Remove small objects, Closing).
+    4. Skeletonization.
+    5. Vectorization to GeoJSON.
+
+Usage:
+    python main_gee_v3.py --debug
+    
+    # Send Request
+    curl -X POST "http://localhost:8001/predict" \
+         -H "Content-Type: application/json" \
+         -d '{"latitude": 30.2672, "longitude": -97.7431}'
+"""
 
 import os
 import io
@@ -98,11 +124,28 @@ app = FastAPI(lifespan=lifespan)
 
 def fetch_gee_image(lat, lon, scale=GEE_SCALE, size=WINDOW_SIZE, collection=GEE_IMAGE_COLLECTION):
     """
-    Fetches a static image from Google Earth Engine centered at (lat, lon).
+    Fetches a static image crop from Google Earth Engine centered at the given coordinates.
+    
+    Args:
+        lat (float): Latitude of the center point (WGS84).
+        lon (float): Longitude of the center point (WGS84).
+        scale (float): Scale in meters per pixel. default=1.0 (NAIP/High Res).
+        size (int): Output image size in pixels (e.g., 1024x1024).
+        collection (str): GEE Asset ID (e.g., 'USDA/NAIP/DOQQ').
+        
     Returns:
-        image_array (np.array): (H, W, 3) RGB image data.
-        transform (Affine): Affine transform for EPSG:3857 -> Pixel.
-        crs (str): 'EPSG:3857'.
+        tuple:
+            - image_array (np.array): (H, W, 3) RGB image data in RGB format.
+            - transform (Affine): Rasterio Affine transform mapping pixels to EPSG:3857 coordinates.
+                                  Essential for georeferencing the output vectors.
+            - crs (str): The projection used ('EPSG:3857').
+            
+    Methodology:
+        1. Converts Lat/Lon to Web Mercator (EPSG:3857) meters.
+        2. Defines a square bounding box centered on the point with side length = size * scale.
+        3. Requests this exact region from GEE using `getThumbURL` with `crs='EPSG:3857'`.
+           This forces GEE to reproject/resample the data to our grid.
+        4. Downloads and decodes the JPG response.
     """
     # 1. Coordinate Math (WGS84 -> Web Mercator)
     # GEE works best if we request the grid in the projection we want (3857).
