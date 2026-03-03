@@ -261,4 +261,24 @@ docker compose run --rm cli earthengine authenticate
 
 ---
 
+## 🧪 Example API Requests
+
+**Local GeoTIFF API** (`main_v4.py` — port 8000):
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"latitude": 30.224949915094008, "longitude": -97.78460932372762}'
+```
+
+**GEE API** (`main_gee_v4.py` — port 8001):
+```bash
+curl -X POST http://localhost:8001/predict \
+  -H "Content-Type: application/json" \
+  -d '{"latitude": 34.09452, "longitude": -118.27286}'
+```
+
+Both return a GeoJSON FeatureCollection of the road network.
+
+---
+
 **License:** MIT

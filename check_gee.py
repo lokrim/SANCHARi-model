@@ -1,12 +1,12 @@
-"""
-Sanchari V3 - GEE Diagnostics (check_gee.py)
 
-A unified diagnostic tool to verify Google Earth Engine (GEE) setup.
-Checks:
-1.  Authentication Credentials (~/.config/earthengine/credentials).
-2.  Project Configuration (Imports from `main_gee_v3.py`).
-3.  Initialization (`ee.Initialize`).
-4.  Data Access (Probe NAIP, Sentinel-2, Landsat, and Hybrid layers).
+"""
+Sanchari V4 - GEE Diagnostics Utility (check_gee.py)
+
+Verifies the complete Google Earth Engine setup in four sequential steps:
+    1. Credential file presence.
+    2. Project ID configuration (imported from main_gee_v4.py).
+    3. GEE initialisation.
+    4. Data catalog access for NAIP, Sentinel-2, and Landsat.
 
 Usage:
     python check_gee.py
@@ -15,66 +15,82 @@ Usage:
 import ee
 import os
 
-print("--- Google Earth Engine Diagnostics Tool ---")
 
-# 1. Auth Check
-print("\n[1] Checking Credentials...")
+print("--- Google Earth Engine Diagnostics ---")
+
+
+# ---------------------------------------------------------------------------
+# Step 1: Credential file check
+# ---------------------------------------------------------------------------
+
+print("\n[1] Credential file ...")
 creds_path = os.path.expanduser("~/.config/earthengine/credentials")
 if os.path.exists(creds_path):
-    print(f"   [INFO] Credentials file found at: {creds_path}")
+    print(f"    Found: {creds_path}")
 else:
-    print("   [WARN] No credentials file found at standard location.")
+    print("    Not found at standard location (~/.config/earthengine/credentials).")
 
-# 2. Project Configuration
-print("\n[2] Checking Project Configuration...")
+
+# ---------------------------------------------------------------------------
+# Step 2: Project configuration
+# ---------------------------------------------------------------------------
+
+print("\n[2] Project configuration ...")
 try:
     from main_gee_v4 import GEE_PROJECT
-    print(f"   [INFO] Imported Project ID from main_gee_v4.py: {GEE_PROJECT}")
+    print(f"    Project ID imported from main_gee_v4.py: {GEE_PROJECT}")
 except ImportError:
     GEE_PROJECT = None
-    print("   [WARN] Could not import from main_gee_v4.py. Using default/None.")
+    print("    Could not import from main_gee_v4.py. Falling back to None.")
 
-# 3. Initialization
-print("\n[3] Attempting Initialization...")
+
+# ---------------------------------------------------------------------------
+# Step 3: Initialisation
+# ---------------------------------------------------------------------------
+
+print("\n[3] Initialising GEE ...")
 try:
     ee.Initialize(project=GEE_PROJECT)
-    print(f"   [SUCCESS] Authenticated with Project: {GEE_PROJECT}")
+    print(f"    Authenticated. Project: {GEE_PROJECT}")
 except Exception as e:
-    print(f"   [FAIL] Initialization failed: {e}")
-    print("\n   Troubleshooting:")
-    print("   - Run: 'earthengine authenticate --auth_mode=notebook'")
-    print("   - Check if the Earth Engine API is enabled in Google Cloud Console.")
+    print(f"    Initialisation failed: {e}")
+    print("\n    Troubleshooting:")
+    print("    - Run: earthengine authenticate")
+    print("    - Ensure the Earth Engine API is enabled in Google Cloud Console.")
     exit(1)
 
-# 4. Catalog Access Check
-print("\n[4] Checking Data Catalog Access...")
-datasets = {
-    "NAIP (0.6m, US Only) [Recommended]": "USDA/NAIP/DOQQ",
-    "Sentinel-2 (10m, Global)": "COPERNICUS/S2_HARMONIZED",
-    "Landsat 9 (30m, Global)": "LANDSAT/LC09/C02/T1_L2",
-    "Google Hybrid (Display Only - No API)": "GOOGLE/HYBRID"
+
+# ---------------------------------------------------------------------------
+# Step 4: Data catalog access
+# ---------------------------------------------------------------------------
+
+print("\n[4] Checking catalog access ...")
+
+DATASETS = {
+    "NAIP (0.6m, USA)":       "USDA/NAIP/DOQQ",
+    "Sentinel-2 (10m, global)": "COPERNICUS/S2_HARMONIZED",
+    "Landsat 9 (30m, global)":  "LANDSAT/LC09/C02/T1_L2",
+    "Google Hybrid (display only)": "GOOGLE/HYBRID",
 }
 
-# Test Point (Austin, TX - High chance of NAIP coverage)
-pt = ee.Geometry.Point([-97.7431, 30.2672])
+# Test point: Austin, TX — high probability of NAIP coverage.
+TEST_POINT = ee.Geometry.Point([-97.7431, 30.2672])
 
-for name, asset_id in datasets.items():
-    print(f"\n   Checking: {name} -> '{asset_id}'")
+for name, asset_id in DATASETS.items():
+    print(f"\n    {name} -> '{asset_id}'")
     try:
         if asset_id == "GOOGLE/HYBRID":
-            # Just check info, don't try to compute
             ee.Image(asset_id).getInfo()
-            print("      [INFO] Layer exists (Visualization Only).")
+            print("      Accessible (visualisation layer only; not suitable for inference).")
         else:
-            # Check for actual data availability
-            col = ee.ImageCollection(asset_id).filterBounds(pt).limit(1)
+            col   = ee.ImageCollection(asset_id).filterBounds(TEST_POINT).limit(1)
             count = col.size().getInfo()
             if count > 0:
-                print(f"      [SUCCESS] Accessible! Found data.")
-                print(f"      Bands: {col.first().bandNames().getInfo()}")
+                print(f"      Accessible. Bands: {col.first().bandNames().getInfo()}")
             else:
-                print("      [INFO] Accessible, but no data at test location.")
+                print("      Accessible, but no imagery at test location.")
     except Exception as e:
-        print(f"      [FAIL] Access Denied or Invalid: {e}")
+        print(f"      Access failed: {e}")
 
-print("\n--- Diagnostic Complete ---")
+
+print("\n--- Diagnostics complete ---")

@@ -1,0 +1,8 @@
+{
+"type": "FeatureCollection",
+"name": "gee_batch_7_40.69401_-74.03388",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "name": "road_network" }, "geometry": { "type": "LineString", "coordinates": [ [ -74.036188277156867, 40.695898246765111 ], [ -74.036233192921074, 40.69579608384737 ] ] } }
+]
+}

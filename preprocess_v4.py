@@ -10,188 +10,179 @@ import subprocess
 import argparse
 import shutil
 
-# --- Configuration ---
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
 DATASET_NAME = "balraj98/deepglobe-road-extraction-dataset"
 RAW_DATA_DIR = "data/raw"
-PROCESSED_DATA_DIR = "data/processed_v4/train" # V4 specific directory
-TILE_SIZE = 512  # V4: Larger Context (512x512)
-STRIDE = 256     # V4: 50% Overlap (Stride = Size // 2)
+PROCESSED_DATA_DIR = "data/processed_v4/train"
+
+TILE_SIZE = 512  # Patch dimensions (pixels). Larger context than V1/V2 (256).
+STRIDE = 256     # Sliding-window step: TILE_SIZE // 2 gives 50 % overlap.
+
+
+# ---------------------------------------------------------------------------
+# Dataset download
+# ---------------------------------------------------------------------------
 
 def download_dataset():
     """
-    Downloads and unzips the DeepGlobe Road Extraction dataset from Kaggle.
-    Skips if data is already present.
+    Downloads and extracts the DeepGlobe Road Extraction dataset from Kaggle.
+
+    Requires the Kaggle CLI to be installed and configured with a valid
+    ~/.kaggle/kaggle.json credentials file. Skips the download if the
+    dataset directory already exists.
     """
-    print(f"Downloading {DATASET_NAME}...")
+    print(f"Downloading {DATASET_NAME} ...")
     os.makedirs(RAW_DATA_DIR, exist_ok=True)
-    
-    # Check if data already exists to avoid re-downloading
+
     if os.path.exists(os.path.join(RAW_DATA_DIR, "train")):
-        print("Dataset seems to be already present in data/raw. Skipping download.")
+        print("Dataset already present in data/raw. Skipping download.")
         return
 
     try:
-        # Use Kaggle CLI (must be installed and configured with kaggle.json)
-        subprocess.run(["kaggle", "datasets", "download", "-d", DATASET_NAME, "-p", RAW_DATA_DIR], check=True)
-        
-        # Unzip
+        subprocess.run(
+            ["kaggle", "datasets", "download", "-d", DATASET_NAME, "-p", RAW_DATA_DIR],
+            check=True
+        )
+
         zip_path = os.path.join(RAW_DATA_DIR, "deepglobe-road-extraction-dataset.zip")
-        print(f"Unzipping {zip_path}...")
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        print(f"Extracting {zip_path} ...")
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
             zip_ref.extractall(RAW_DATA_DIR)
-        
-        # Cleanup zip
+
         os.remove(zip_path)
         print("Download and extraction complete.")
-        
+
     except FileNotFoundError:
-        print("Error: 'kaggle' command not found. Please install it with 'pip install kaggle' and set up your ~/.kaggle/kaggle.json.")
+        print(
+            "Error: 'kaggle' command not found. "
+            "Install it with 'pip install kaggle' and configure ~/.kaggle/kaggle.json."
+        )
     except subprocess.CalledProcessError as e:
         print(f"Error downloading dataset: {e}")
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"Unexpected error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Tiling
+# ---------------------------------------------------------------------------
 
 def tile_image_and_mask(image_path, mask_path, dest_dir, tile_size=512, stride=256):
     """
-    Tiles a large satellite image and its corresponding mask into smaller patches
-    using a sliding window approach with overlap.
-    
+    Tiles a large satellite image and its binary mask into overlapping patches.
+
+    Uses a sliding-window approach with reflect padding so that every pixel
+    near the image boundary is covered by at least one complete window.
+    Output tiles are written to dest_dir/images/ and dest_dir/masks/.
+
     Args:
-        image_path (str): Path to source image.
-        mask_path (str): Path to source binary mask.
-        dest_dir (str): Directory to save processed tiles.
-        tile_size (int): Size of the square tile (e.g., 512).
-        stride (int): Step size for sliding window (e.g., 256 for 50% overlap).
+        image_path (str): Path to the source satellite image (GeoTIFF or JPEG).
+        mask_path  (str): Path to the corresponding binary road mask.
+        dest_dir   (str): Root directory for processed output tiles.
+        tile_size  (int): Side length of each square tile in pixels.
+        stride     (int): Step size for the sliding window. Use tile_size // 2
+                          for 50 % overlap between adjacent tiles.
     """
-    base_name = os.path.basename(image_path).split('.')[0]
-    
-    # Read Image using Rasterio (handles GeoTIFFs robustly)
+    base_name = os.path.basename(image_path).split(".")[0]
+
+    # Rasterio handles GeoTIFFs robustly; convert from (Bands, H, W) to (H, W, Bands).
     with rasterio.open(image_path) as src:
         image = src.read()
-        # Rasterio reads (Bands, H, W) -> Convert to (H, W, Bands) for OpenCV/Saving
         image = np.moveaxis(image, 0, -1)
-        # Ensure RGB (Keep first 3 bands if multispectral)
-        image = image[:, :, :3]
-    
-    # Read Mask using OpenCV (Grayscale)
+        image = image[:, :, :3]  # Keep only the first three bands (RGB).
+
     mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
     if mask is None:
-        print(f"Warning: Mask not found for {image_path}")
+        print(f"Warning: Mask not found for {image_path}. Skipping.")
         return
 
     h, w, _ = image.shape
-    
-    # Padding to ensure we can cover the edges with the window
-    # Unlike V3 (exact multiples), here we want to ensure the last window fits.
-    # Simple strategy: Pad to multiple of stride, then ensure size fits?
-    # Better: Pad so that (W - Size) % Stride == 0? 
-    # Use copyMakeBorder with REFLECT to handle boundaries safely.
-    
+
+    # Pad to the nearest multiple of tile_size so the sliding window fits evenly.
     pad_h = (tile_size - h % tile_size) % tile_size
     pad_w = (tile_size - w % tile_size) % tile_size
-    
-    # Actually, for sliding window with overlap, we might need more padding if the last step
-    # doesn't align. But simplest is to just pad to allow full tile extraction.
-    # Let's pad enough to cover.
-    
     image = cv2.copyMakeBorder(image, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
     mask = cv2.copyMakeBorder(mask, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
-    
+
     h_padded, w_padded, _ = image.shape
-    
+
+    img_out_dir = os.path.join(dest_dir, "images")
+    mask_out_dir = os.path.join(dest_dir, "masks")
+    os.makedirs(img_out_dir, exist_ok=True)
+    os.makedirs(mask_out_dir, exist_ok=True)
+
     idx = 0
-    # Sliding Window Loop
     for y in range(0, h_padded - tile_size + 1, stride):
         for x in range(0, w_padded - tile_size + 1, stride):
-            # Extract tile
-            img_tile = image[y:y+tile_size, x:x+tile_size]
-            mask_tile = mask[y:y+tile_size, x:x+tile_size]
-            
-            # Save
-            # Naming convention includes x, y to potentially reconstruct if needed, 
-            # but simpler just index for unique filenames.
+            img_tile = image[y : y + tile_size, x : x + tile_size]
+            mask_tile = mask[y : y + tile_size, x : x + tile_size]
+
             out_name = f"{base_name}_{idx}"
-            
-            # Create subdirs "images" and "masks" inside dest_dir? 
-            # V3 put them all in dest_dir (flat). 
-            # Let's follow V3 convention but maybe organize better?
-            # V3 dataset_v3 expected 'images' and 'masks' subdirs?
-            # Checking V3 code: 
-            # image_dir = os.path.join(CONFIG["PROCESSED_DATA_DIR"], 'images')
-            # So V3 preprocess MUST HAVE created subdirs.
-            # Let's check preprocess_v3 code again...
-            # Ah, V3 preprocess_v3 code: 
-            # cv2.imwrite(os.path.join(dest_dir, f"{out_name}.jpg"), ...)
-            # Wait, did V3 preprocess create subdirs?
-            # "os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)"
-            # It saved to PROCESSED_DATA_DIR directly.
-            # But train_v3.py looks for "PROCESSED_DATA_DIR/images".
-            # This implies V3 IS BROKEN or I misread.
-            # Let's fix this in V4. We will create 'images' and 'masks' subfolders.
-            
-            img_out_dir = os.path.join(dest_dir, "images")
-            mask_out_dir = os.path.join(dest_dir, "masks")
-            os.makedirs(img_out_dir, exist_ok=True)
-            os.makedirs(mask_out_dir, exist_ok=True)
-            
-            cv2.imwrite(os.path.join(img_out_dir, f"{out_name}.jpg"), cv2.cvtColor(img_tile, cv2.COLOR_RGB2BGR))
-            cv2.imwrite(os.path.join(mask_out_dir, f"{out_name}.png"), mask_tile) # Save mask as png
+            cv2.imwrite(
+                os.path.join(img_out_dir, f"{out_name}.jpg"),
+                cv2.cvtColor(img_tile, cv2.COLOR_RGB2BGR)
+            )
+            cv2.imwrite(os.path.join(mask_out_dir, f"{out_name}.png"), mask_tile)
             idx += 1
 
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 def main():
-    parser = argparse.ArgumentParser(description="V4 Preprocessing: 512x512 with Overlap")
-    parser.add_argument("--download", action="store_true", help="Download dataset from Kaggle")
+    parser = argparse.ArgumentParser(
+        description="V4 Preprocessing: tile the DeepGlobe dataset into 512x512 patches."
+    )
+    parser.add_argument(
+        "--download",
+        action="store_true",
+        help="Download the dataset from Kaggle before tiling."
+    )
     args = parser.parse_args()
 
     print("--- V4 Preprocessing Pipeline ---")
-    print(f"Tile Size: {TILE_SIZE}x{TILE_SIZE}")
-    print(f"Stride: {STRIDE} (50% Overlap)")
-    
-    # 1. Download Data
+    print(f"Tile size : {TILE_SIZE}x{TILE_SIZE}")
+    print(f"Stride    : {STRIDE} (50 % overlap)")
+
     if args.download:
         download_dataset()
     else:
-        print("Skipping download (use --download to force). Checking local data...")
-    
-    # 2. Setup Directories
+        print("Skipping download (pass --download to force). Checking local data ...")
+
+    # Remove stale processed tiles to avoid mixing versions.
     if os.path.exists(PROCESSED_DATA_DIR):
-        print(f"Cleaning existing V4 processed data at {PROCESSED_DATA_DIR}...")
+        print(f"Removing existing processed data at {PROCESSED_DATA_DIR} ...")
         shutil.rmtree(PROCESSED_DATA_DIR)
     os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
-    
-    # 3. Locate Images
+
     search_path = os.path.join(RAW_DATA_DIR, "**", "*_sat.jpg")
     sat_files = glob.glob(search_path, recursive=True)
-    
+
     if not sat_files:
-        print("No satellite images found. Please check data/raw structure or run with --download.")
+        print("No satellite images found. Check data/raw structure or run with --download.")
         return
-        
-    print(f"Found {len(sat_files)} source images. Starting tiling...")
-    
-    # 4. Process Each Image
+
+    print(f"Found {len(sat_files)} source images. Starting tiling ...")
+
     for img_path in tqdm(sat_files):
-        # Infer mask path: _sat.jpg -> _mask.png
-        # Try multiple common patterns just in case
+        # Infer the mask path by replacing the _sat suffix.
         potential_masks = [
-            img_path.replace('_sat.jpg', '_mask.png'),
-            img_path.replace('sat.jpg', 'mask.png'),
-            img_path.replace('_sat.jpg', '_mask.jpg') # Some might be jpg
+            img_path.replace("_sat.jpg", "_mask.png"),
+            img_path.replace("sat.jpg", "mask.png"),
+            img_path.replace("_sat.jpg", "_mask.jpg"),
         ]
-        
-        mask_path = None
-        for p in potential_masks:
-            if os.path.exists(p):
-                mask_path = p
-                break
-        
+        mask_path = next((p for p in potential_masks if os.path.exists(p)), None)
+
         if mask_path:
             tile_image_and_mask(img_path, mask_path, PROCESSED_DATA_DIR, TILE_SIZE, STRIDE)
-        else:
-            # Fallback for some datasets where mask might be missing
-            pass
-            
-    print(f"Preprocessing complete. V4 Tiles saved to {PROCESSED_DATA_DIR}")
+
+    print(f"Preprocessing complete. Tiles saved to {PROCESSED_DATA_DIR}.")
+
 
 if __name__ == "__main__":
     main()
