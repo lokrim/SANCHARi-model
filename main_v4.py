@@ -28,6 +28,7 @@ import time
 
 # Import V4 model
 from model_v4 import create_model_v4
+from postprocess_v4 import apply_advanced_postprocessing, graph_to_gdf, export_to_geojson
 
 # --- Configuration & Constants ---
 GEOTIFFS_DIR = './geotiffs/'       
@@ -166,7 +167,7 @@ async def predict(coords: Coordinates):
 
     # 4. Post-Process (Advanced V4)
     # Thresholding, Gap Closing, Skeleton Pruning
-    binary_mask, skeleton = apply_advanced_postprocessing(prob_map, threshold=0.45)
+    binary_mask, skeleton, cleaned_graph = apply_advanced_postprocessing(prob_map, threshold=0.45)
     
     skeleton_uint8 = (skeleton * 255).astype(np.uint8)
     mask_uint8 = (binary_mask * 255).astype(np.uint8)
@@ -177,34 +178,20 @@ async def predict(coords: Coordinates):
         img_bgr = cv2.cvtColor(img_hwc, cv2.COLOR_RGB2BGR)
         cv2.imwrite(os.path.join(DEBUG_DIR, f"{base_name}_input.jpg"), img_bgr)
         cv2.imwrite(os.path.join(DEBUG_DIR, f"{base_name}_prob.png"), (prob_map * 255).astype(np.uint8))
-        cv2.imwrite(os.path.join(DEBUG_DIR, f"{base_name}_skeleton.png"), (skeleton_uint8 * 255))
+        cv2.imwrite(os.path.join(DEBUG_DIR, f"{base_name}_skeleton.png"), skeleton_uint8)
         print(f"Saved debug images to {DEBUG_DIR}")
 
     # 6. Vectorize
-    shapes = rasterio.features.shapes(skeleton_uint8, mask=skeleton, transform=window_transform)
-    features = []
-    transformer_to_wgs84 = pyproj.Transformer.from_crs(src.crs, "epsg:4326", always_xy=True)
-
-    for geom, val in shapes:
-        if val == 1:
-            poly_coords = geom['coordinates'][0]
-            wgs84_coords = []
-            for x, y in poly_coords:
-                lon_deg, lat_deg = transformer_to_wgs84.transform(x, y)
-                wgs84_coords.append((lon_deg, lat_deg))
-            
-            features.append({
-                "type": "Feature",
-                "geometry": {"type": "LineString", "coordinates": wgs84_coords},
-                "properties": {} 
-            })
-
-    feature_collection = {"type": "FeatureCollection", "features": features}
+    gdf = graph_to_gdf(cleaned_graph, window_transform, crs=src.crs.to_string())
+    # Create GeoJSON explicitly to return via API
+    # Since we need to return the dict, not just write a file
+    geojson_str = gdf.to_json()
+    import json
+    feature_collection = json.loads(geojson_str)
     
     if DEBUG_MODE:
         geojson_dir = "output-geojson-v4"
         os.makedirs(geojson_dir, exist_ok=True)
-        import json
         out_path = os.path.join(geojson_dir, f"{request_id}_{lat}_{lon}.geojson")
         with open(out_path, 'w') as f:
             json.dump(feature_collection, f)

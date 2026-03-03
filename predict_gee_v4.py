@@ -21,7 +21,8 @@ import pyproj
 import rasterio
 import rasterio.features
 import rasterio.transform
-from skimage.morphology import skeletonize, remove_small_objects, closing, disk
+from skimage.morphology import closing, disk
+
 
 # Import GEE
 try:
@@ -33,7 +34,7 @@ except ImportError:
 # Import V4 model
 # Import V4 model
 from model_v4 import create_model_v4
-from postprocess_v4 import apply_advanced_postprocessing
+from postprocess_v4 import apply_advanced_postprocessing, graph_to_gdf, export_to_geojson
 
 # --- Configuration ---
 # GEE Settings (Import from main_gee_v4 when created, or duplicate constants for now)
@@ -145,9 +146,24 @@ def predict_sliding_window(large_image, model, device):
     prob_map = np.zeros((h, w), dtype=np.float32)
     count_map = np.zeros((h, w), dtype=np.float32)
 
-    pad_h = (PATCH_SIZE - h % PATCH_SIZE) % PATCH_SIZE
-    pad_w = (PATCH_SIZE - w % PATCH_SIZE) % PATCH_SIZE
-    padded_image = cv2.copyMakeBorder(large_image, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
+    import math
+    # U-Net++ / EfficientNet require inputs strictly divisible by 32
+    pad_h = (32 - h % 32) % 32
+    pad_w = (32 - w % 32) % 32
+    
+    # We must also ensure the padded image can fit our sliding windows properly
+    # Calculate how many windows we need to cover the image
+    num_windows_y = math.ceil((h + pad_h - PATCH_SIZE) / STRIDE) + 1 if (h + pad_h) > PATCH_SIZE else 1
+    num_windows_x = math.ceil((w + pad_w - PATCH_SIZE) / STRIDE) + 1 if (w + pad_w) > PATCH_SIZE else 1
+    
+    # Calculate total padded size needed to fit all windows
+    target_h = max(PATCH_SIZE, (num_windows_y - 1) * STRIDE + PATCH_SIZE)
+    target_w = max(PATCH_SIZE, (num_windows_x - 1) * STRIDE + PATCH_SIZE)
+    
+    final_pad_h = target_h - h
+    final_pad_w = target_w - w
+    
+    padded_image = cv2.copyMakeBorder(large_image, 0, final_pad_h, 0, final_pad_w, cv2.BORDER_REFLECT)
     h_padded, w_padded, _ = padded_image.shape
     
     for y in range(0, h_padded - PATCH_SIZE + 1, STRIDE):
@@ -237,45 +253,26 @@ def main():
         print(f"   Inference time: {time.time() - t1:.2f}s")
         
         # Post-Process (Advanced V4)
-        binary_mask, skeleton = apply_advanced_postprocessing(prob_map, threshold=THRESHOLD if 'THRESHOLD' in globals() else 0.45)
+        # Post-Process (Advanced V4 with Graphs)
+        binary_mask, skeleton, cleaned_graph = apply_advanced_postprocessing(prob_map, threshold=THRESHOLD if 'THRESHOLD' in globals() else 0.45)
         
-        skeleton_uint8 = (skeleton * 255).astype(np.uint8)
-        
-        # Save Images
+        # Save Output Mask & Tensors
         base_name = f"gee_batch_{i}_{lat:.5f}_{lon:.5f}"
         
         cv2.imwrite(os.path.join(OUTPUT_IMG_DIR, f"{base_name}_input.jpg"), cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR))
         cv2.imwrite(os.path.join(OUTPUT_IMG_DIR, f"{base_name}_prob.png"), (prob_map * 255).astype(np.uint8))
         cv2.imwrite(os.path.join(OUTPUT_IMG_DIR, f"{base_name}_mask.png"), (binary_mask * 255).astype(np.uint8))
-        cv2.imwrite(os.path.join(OUTPUT_IMG_DIR, f"{base_name}_skeleton.png"), (skeleton_uint8 * 255))
+        cv2.imwrite(os.path.join(OUTPUT_IMG_DIR, f"{base_name}_skeleton.png"), (skeleton * 255).astype(np.uint8))
         
         overlay = img_rgb.copy()
         overlay[binary_mask > 0] = [0, 0, 255]
         combined = cv2.addWeighted(img_rgb, 0.7, overlay, 0.3, 0)
         cv2.imwrite(os.path.join(OUTPUT_IMG_DIR, f"{base_name}_overlay.jpg"), combined)
         
-        # Save GeoJSON
-        shapes = rasterio.features.shapes(skeleton_uint8, mask=skeleton, transform=transform)
-        features = []
-        transformer_to_wgs84 = pyproj.Transformer.from_crs("epsg:3857", "epsg:4326", always_xy=True)
-        
-        for geom, val in shapes:
-            if val == 1:
-                poly_coords = geom['coordinates'][0]
-                wgs84_line = []
-                for x, y in poly_coords:
-                    lon_deg, lat_deg = transformer_to_wgs84.transform(x, y)
-                    wgs84_line.append((lon_deg, lat_deg))
-                
-                features.append({
-                    "type": "Feature",
-                    "geometry": {"type": "LineString", "coordinates": wgs84_line},
-                    "properties": {"confidence": "high"}
-                })
-        
+        # Save GeoJSON using Shapely/GeoPandas
+        gdf = graph_to_gdf(cleaned_graph, transform, crs="EPSG:3857")
         geojson_path = os.path.join(OUTPUT_GEOJSON_DIR, f"{base_name}.geojson")
-        with open(geojson_path, 'w') as f:
-            json.dump({"type": "FeatureCollection", "features": features}, f)
+        export_to_geojson(gdf, geojson_path, target_crs="EPSG:4326")
             
         print(f"   Saved outputs to {OUTPUT_IMG_DIR} and {OUTPUT_GEOJSON_DIR}")
 

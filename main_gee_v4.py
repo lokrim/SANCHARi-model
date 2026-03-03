@@ -35,7 +35,7 @@ except ImportError:
 # Import V4 model
 # Import V4 model
 from model_v4 import create_model_v4
-from postprocess_v4 import apply_advanced_postprocessing
+from postprocess_v4 import apply_advanced_postprocessing, graph_to_gdf, export_to_geojson
 
 # --- Configuration ---
 GEE_PROJECT = 'gen-lang-client-0330945199' 
@@ -213,7 +213,8 @@ async def predict(coords: Coordinates):
     
     # 3. Post-Process (Advanced V4)
     # Thresholding, Gap Closing, Skeleton Pruning
-    binary_mask, skeleton = apply_advanced_postprocessing(prob_map, threshold=0.45)
+    # Thresholding, Gap Closing, Skeleton Pruning
+    binary_mask, skeleton, cleaned_graph = apply_advanced_postprocessing(prob_map, threshold=0.45)
     
     skeleton_uint8 = (skeleton * 255).astype(np.uint8)
     
@@ -224,29 +225,14 @@ async def predict(coords: Coordinates):
         cv2.imwrite(os.path.join(DEBUG_DIR, f"{base_name}_input.jpg"), img_bgr)
         cv2.imwrite(os.path.join(DEBUG_DIR, f"{base_name}_prob.png"), (prob_map * 255).astype(np.uint8))
         cv2.imwrite(os.path.join(DEBUG_DIR, f"{base_name}_mask.png"), (binary_mask * 255).astype(np.uint8))
-        cv2.imwrite(os.path.join(DEBUG_DIR, f"{base_name}_skeleton.png"), (skeleton_uint8 * 255))
+        cv2.imwrite(os.path.join(DEBUG_DIR, f"{base_name}_skeleton.png"), skeleton_uint8)
         print(f"Saved debug images to {DEBUG_DIR}")
 
     # 5. Vectorize
-    shapes = rasterio.features.shapes(skeleton_uint8, mask=skeleton, transform=transform)
-    features = []
-    transformer_to_wgs84 = pyproj.Transformer.from_crs("epsg:3857", "epsg:4326", always_xy=True)
-    
-    for geom, val in shapes:
-        if val == 1:
-            poly_coords = geom['coordinates'][0]
-            wgs84_line = []
-            for x, y in poly_coords:
-                lon, lat = transformer_to_wgs84.transform(x, y)
-                wgs84_line.append((lon, lat))
-            
-            features.append({
-                "type": "Feature",
-                "geometry": {"type": "LineString", "coordinates": wgs84_line},
-                "properties": {}
-            })
-            
-    feature_collection = {"type": "FeatureCollection", "features": features}
+    gdf = graph_to_gdf(cleaned_graph, transform, crs="EPSG:3857")
+    geojson_str = gdf.to_json()
+    import json
+    feature_collection = json.loads(geojson_str)
 
     if DEBUG_MODE:
         geojson_dir = "output-geojson-v4"

@@ -18,3 +18,7 @@ pandas
 prettytable
 earthengine-api
 timm
+networkx
+shapely
+geopandas
+sknw

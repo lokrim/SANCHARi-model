@@ -136,7 +136,7 @@ def main():
 # ...
 
         # --- Post-Processing (Advanced V4) ---
-        binary_mask, skeleton = apply_advanced_postprocessing(prob_map, threshold=0.45)
+        binary_mask, skeleton, cleaned_graph = apply_advanced_postprocessing(prob_map, threshold=0.45)
         
         skeleton_uint8 = (skeleton * 255).astype(np.uint8)
         mask_uint8 = (binary_mask * 255).astype(np.uint8)

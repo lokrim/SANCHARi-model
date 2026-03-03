@@ -28,11 +28,11 @@ else:
 # 2. Project Configuration
 print("\n[2] Checking Project Configuration...")
 try:
-    from main_gee_v3 import GEE_PROJECT
-    print(f"   [INFO] Imported Project ID from main_gee_v3.py: {GEE_PROJECT}")
+    from main_gee_v4 import GEE_PROJECT
+    print(f"   [INFO] Imported Project ID from main_gee_v4.py: {GEE_PROJECT}")
 except ImportError:
     GEE_PROJECT = None
-    print("   [WARN] Could not import from main_gee_v3.py. Using default/None.")
+    print("   [WARN] Could not import from main_gee_v4.py. Using default/None.")
 
 # 3. Initialization
 print("\n[3] Attempting Initialization...")
