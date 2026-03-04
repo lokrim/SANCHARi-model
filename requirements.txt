@@ -1,9 +1,12 @@
-# SANCHARi V1 — Dependencies
+# SANCHARi V2 — Dependencies
 # Install with: pip install -r requirements.txt
 
 # Deep learning
 torch
 torchvision
+
+# Model architecture (ResNet34 U-Net via SMP)
+segmentation-models-pytorch
 
 # Data & image processing
 numpy
@@ -12,19 +15,8 @@ albumentations
 
 # Training utilities
 scikit-learn
+pandas
 tqdm
 
-# Geospatial (used in main.py and check_coords.py)
-rasterio
-pyproj
-
-# API server
-fastapi
-uvicorn
-pydantic
-
-# Dataset download (used in preprocess.py)
+# Dataset download (used in preprocessing)
 kaggle
-
-# Debug utility (check_coords.py)
-prettytable

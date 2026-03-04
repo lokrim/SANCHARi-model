@@ -1,9 +1,5 @@
-
 import sys
 import os
-
-# Ensure src/ is on the path so sibling modules (model, dataset) can be imported
-# regardless of whether this script is run from the repo root or from src/.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import torch
@@ -12,82 +8,74 @@ import numpy as np
 import argparse
 from tqdm import tqdm
 
-from model import UNet
+from model import create_model
 from dataset import get_transforms
 
-# --- Configuration ---
-# Paths are anchored to the repo root via __file__, so this script works
-# whether run as `python src/predict.py` or `cd src && python predict.py`.
 _SRC_DIR  = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_SRC_DIR)
-MODEL_PATH = os.path.join(_REPO_ROOT, 'weights', 'best_model_v1.pth')
-PATCH_SIZE = 256
-IMG_SIZE = 1024
-NUM_PATCHES_PER_DIM = IMG_SIZE // PATCH_SIZE
+CONFIG = {
+    "MODEL_PATH": os.path.join(_REPO_ROOT, 'weights', 'best_model_v2.pth'),
+    "OPTIMAL_THRESHOLD": 0.4,
+    "PATCH_SIZE": 256,
+    "IMG_SIZE": 1024,
+}
 
-def predict_single_image(model, image_path, device):
+NUM_PATCHES_PER_DIM = CONFIG["IMG_SIZE"] // CONFIG["PATCH_SIZE"]
+
+def predict_single_image(model, image_path, device, transform):
     """
-    Runs prediction on a single 1024x1024 image.
+    Runs prediction on a single 1024x1024 image using a tiling strategy.
     """
-    # Load the image
     img = cv2.imread(image_path)
     if img is None:
         print(f"Error: Could not read image {image_path}")
         return None
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    # Create a blank canvas for the final mask
-    full_mask = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.uint8)
+    full_mask = np.zeros((CONFIG["IMG_SIZE"], CONFIG["IMG_SIZE"]), dtype=np.uint8)
 
-    # Get the validation/test transforms
-    transform = get_transforms(train=False)
-
-    # Process the image in patches
     for i in range(NUM_PATCHES_PER_DIM):
         for j in range(NUM_PATCHES_PER_DIM):
-            # Define patch coordinates
-            y_start, y_end = i * PATCH_SIZE, (i + 1) * PATCH_SIZE
-            x_start, x_end = j * PATCH_SIZE, (j + 1) * PATCH_SIZE
+            y_start, y_end = i * CONFIG["PATCH_SIZE"], (i + 1) * CONFIG["PATCH_SIZE"]
+            x_start, x_end = j * CONFIG["PATCH_SIZE"], (j + 1) * CONFIG["PATCH_SIZE"]
 
-            # Extract and transform the patch
             patch = img[y_start:y_end, x_start:x_end]
             transformed_patch = transform(image=patch)['image'].unsqueeze(0).to(device)
 
-            # Run prediction
             with torch.no_grad():
                 pred_logit = model(transformed_patch)
                 pred_prob = torch.sigmoid(pred_logit)
-                pred_mask = (pred_prob > 0.5).squeeze().cpu().numpy().astype(np.uint8)
+                pred_mask = (pred_prob > CONFIG["OPTIMAL_THRESHOLD"]).squeeze().cpu().numpy().astype(np.uint8)
 
-            # Place the predicted patch on the canvas
             full_mask[y_start:y_end, x_start:x_end] = pred_mask * 255
 
     return full_mask
 
 def main():
     """
-    Main function to run inference on a folder of images.
+    Main function to run batch inference on a folder of images.
     """
-    parser = argparse.ArgumentParser(description="Road Segmentation Inference")
-    parser.add_argument('--input-folder', type=str, required=True, help='Path to the folder containing input images.')
-    parser.add_argument('--output-folder', type=str, required=True, help='Path to the folder to save predicted masks.')
+    parser = argparse.ArgumentParser(description="V2 Road Segmentation Inference")
+    parser.add_argument('--input-folder', type=str, required=True, help='Path to the folder of input images.')
+    parser.add_argument('--output-folder', type=str, required=True, help='Path to save predicted masks.')
     args = parser.parse_args()
 
-    print("Starting inference...")
+    print("Starting V2 inference...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # --- Load Model ---
-    if not os.path.exists(MODEL_PATH):
-        print(f"Error: Model file not found at {MODEL_PATH}. Please run train.py first.")
+    if not os.path.exists(CONFIG["MODEL_PATH"]):
+        print(f"Error: Model file not found at {CONFIG['MODEL_PATH']}. Please run train.py first.")
         return
 
-    model = UNet(n_channels=3, n_classes=1).to(device)
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+    model = create_model().to(device)
+    model.load_state_dict(torch.load(CONFIG["MODEL_PATH"], map_location=device))
     model.eval()
-    print(f"Model loaded from {MODEL_PATH}")
+    print(f"Model loaded from {CONFIG['MODEL_PATH']}")
 
-    # --- Create Output Directory ---
+    # --- Get Transforms and Create Output Directory ---
+    inference_transform = get_transforms(train=False)
     os.makedirs(args.output_folder, exist_ok=True)
 
     # --- Process Images ---
@@ -98,12 +86,9 @@ def main():
 
     for img_name in tqdm(image_files, desc="Predicting masks"):
         img_path = os.path.join(args.input_folder, img_name)
-        
-        # Perform prediction
-        predicted_mask = predict_single_image(model, img_path, device)
+        predicted_mask = predict_single_image(model, img_path, device, inference_transform)
 
         if predicted_mask is not None:
-            # Save the final mask
             output_path = os.path.join(args.output_folder, f"{os.path.splitext(img_name)[0]}_pred_mask.png")
             cv2.imwrite(output_path, predicted_mask)
 
