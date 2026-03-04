@@ -1,24 +1,30 @@
+# SANCHARi V1 — Dependencies
+# Install with: pip install -r requirements.txt
+
+# Deep learning
 torch
 torchvision
+
+# Data & image processing
 numpy
 opencv-python
-scikit-learn
-matplotlib
-tqdm
-kaggle
 albumentations
-segmentation_models_pytorch
+
+# Training utilities
+scikit-learn
+tqdm
+
+# Geospatial (used in main.py and check_coords.py)
 rasterio
-scikit-image
+pyproj
+
+# API server
 fastapi
 uvicorn
 pydantic
-pyproj
-pandas
+
+# Dataset download (used in preprocess.py)
+kaggle
+
+# Debug utility (check_coords.py)
 prettytable
-earthengine-api
-timm
-networkx
-shapely
-geopandas
-sknw

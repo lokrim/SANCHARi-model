@@ -1,183 +1,244 @@
 # SANCHARi 🛰️🛣️
 
-**Satellite Road Extraction Pipeline — V4**
+**Satellite Road Extraction Pipeline — V1 (Baseline)**
 
-> **Mission:** Democratizing high-quality satellite analytics. SANCHARi provides a robust, open-source pipeline for extracting road networks from satellite imagery (NAIP, Sentinel-2, or local GeoTIFFs), enabling accessible mapping for disaster relief, urban planning, and developing regions where vector maps are outdated or missing.
+> **Branch:** `v1` — The founding version. A custom U-Net trained from scratch on the DeepGlobe Road Extraction dataset. This is where SANCHARi began.
 
-![SANCHARi V4 Overlay](predicted/embed/v4_sat_overlay_1.jpg)
+> **Mission:** Democratizing satellite-based road mapping. SANCHARi provides an open-source pipeline for extracting road networks from satellite imagery — enabling accessible GIS for disaster relief, urban planning, and regions where vector maps are outdated or absent.
+
+| ![V1 Satellite Input](predicted/embed/v1_sat.jpg) |
+|:---:|
+| *Raw satellite input (DeepGlobe dataset)* |
+
+| ![V1 Prediction](predicted/embed/v1_pred_mask.png) | ![V1 Ground Truth](predicted/embed/v1_truth_mask.png) |
+|:---:|:---:|
+| *V1 Predicted mask (~55% IoU)* | *Ground truth mask* |
 
 ---
 
-## 🚀 Project Evolution: V1 → V4
+## 🚀 Version Evolution
 
-| Feature | V1 (Baseline) | V2 (Transfer Learning) | V3 (Refinement) | **V4 (Current)** |
+V1 is the **baseline**. Each subsequent branch builds on it:
+
+| Feature | **V1 (This Branch)** | V2 (Transfer Learning) | V3 (Refinement) | V4 (State-of-the-Art) |
 | :--- | :--- | :--- | :--- | :--- |
-| **Architecture** | Custom U-Net | ResNet34-UNet | ResNet34-UNet + Attention | **U-Net++ w/ EfficientNet-B4** |
-| **Input Patching** | 256×256 | 256×256 | 1024×1024 Sliding | **512×512 (50% Overlap)** |
-| **Loss Function** | BCE | Dice | Dice | **Combo (Dice+Focal) → Lovász** |
-| **Augmentation** | Basic flips | Standard | Standard | **GridDistortion + ElasticTransform** |
-| **Inference** | Direct patch | Direct patch | 4-Way TTA | **Sliding Window + 4-Way TTA** |
-| **Post-Processing** | Threshold only | Threshold only | Basic morphology | **Graph-theoretic (sknw + NetworkX)** |
-| **Output** | PNG mask | PNG mask | PNG + basic GeoJSON | **Skeleton + GeoJSON FeatureCollection** |
-| **IoU Score** | ~55% | ~68% | ~75% | **~80%** |
-
-### Visual Progression
-
-| V1 (Noisy) | V3 (Improved) | **V4 (Clean & Connected)** |
-| :---: | :---: | :---: |
-| ![V1](predicted/embed/v1_pred_mask.png) | ![V3](predicted/embed/v3_pred_mask.png) | ![V4](predicted/embed/v4_pred_mask_1.png) |
+| **Architecture** | **Custom U-Net (scratch)** | ResNet34-UNet | ResNet34-UNet + Attention | U-Net++ w/ EfficientNet-B4 |
+| **Input Patching** | **256×256 direct** | 256×256 direct | 1024×1024 Sliding | 512×512 (50% Overlap) |
+| **Loss Function** | **BCE Loss** | Dice | Dice | Combo (Dice+Focal) → Lovász |
+| **Augmentation** | **Basic flips/rotations** | Standard | Standard | GridDistortion + ElasticTransform |
+| **Inference** | **Direct patch** | Direct patch | 4-Way TTA | Sliding Window + 4-Way TTA |
+| **Post-Processing** | **Threshold only** | Threshold only | Basic morphology | Graph-theoretic (sknw + NetworkX) |
+| **Output** | **PNG mask** | PNG mask | PNG + basic GeoJSON | Skeleton + GeoJSON FeatureCollection |
+| **IoU Score** | **~55%** | ~68% | ~75% | ~80% |
+| **API** | **Basic FastAPI (local GeoTIFF)** | Basic Flask | FastAPI | FastAPI (2 servers) |
 
 ---
 
-## 🧠 Technical Deep Dive
+## 🧠 V1 Architecture: Custom U-Net
 
-### 1. Architecture: U-Net++ & EfficientNet-B4 (`model_v4.py`)
+V1 implements a **standard U-Net from scratch** — no pretrained backbone, no external architecture library.
 
-V4 uses a **U-Net++** decoder with an **EfficientNet-B4** encoder via `segmentation_models_pytorch`.
+```
+Input (256×256×3 RGB)
+       ↓
+Encoder (5 levels)
+   inc:   3 → 64     (DoubleConv)
+   down1: 64 → 128   (MaxPool2d + DoubleConv)
+   down2: 128 → 256  (MaxPool2d + DoubleConv)
+   down3: 256 → 512  (MaxPool2d + DoubleConv)
+   down4: 512 → 512  (MaxPool2d + DoubleConv, bilinear mode)
+       ↓
+Decoder (4 Up-blocks, bilinear upsampling + skip connections)
+   up1: 1024 → 256
+   up2: 512  → 128
+   up3: 256  → 64
+   up4: 128  → 64
+       ↓
+Output Conv (64 → 1, kernel=1)  → raw logit map
+       ↓
+Sigmoid → threshold at 0.5 → binary road mask
+```
 
-- **EfficientNet-B4**: Compound-scaled backbone (depth × width × resolution) pretrained on ImageNet. Far richer feature representations than ResNet34 with comparable parameter efficiency (~19M params).
-- **U-Net++**: Replaces standard skip connections with *dense, nested* skip pathways between every encoder and decoder level. Reduces the semantic gap, preserving sub-pixel spatial detail critical for thin road extraction.
+**Key building blocks** (`src/model.py`):
+- `DoubleConv`: Two Conv2d → BatchNorm → ReLU layers
+- `Down`: MaxPool2d followed by DoubleConv
+- `Up`: Bilinear upsample, pad to match skip, concat, DoubleConv
+- `OutConv`: 1×1 convolution to single output channel
 
-### 2. Training Strategy (`train_v4.py` + `train_v4_lovasz.py`)
+---
 
-**Phase 1 — Main Training (50 epochs):**
-- **ComboLoss**: `0.5 × DiceLoss + 0.5 × FocalLoss`
-  - Dice optimizes overlap; Focal focuses the model on hard pixels (road edges, shadows, intersections).
-- **Optimizer**: AdamW (lr=5e-4, weight_decay=1e-4) with Cosine Annealing scheduler.
-- **Gradient Accumulation**: Effective batch size of 16 (8 × 2 steps) to fit within GPU VRAM.
+## 🗂️ Data Pipeline
 
-**Phase 2 — Hard Negative Mining (optional, `--hard-mining` flag, +10 epochs):**
-- Computes per-image IoU on the full training set.
-- Isolates the bottom 20% hardest samples (lowest IoU).
-- Fine-tunes exclusively on hard samples at LR=1e-5.
+### Preprocessing (`src/preprocess.py`)
 
-**Phase 3 — Lovász Fine-Tuning (`train_v4_lovasz.py`, 20 epochs):**
-- Switches loss to `LovaszLoss` — directly optimizes the Jaccard index via convex surrogation.
-- Very conservative LR (1e-5) applied to the best ComboLoss checkpoint.
+The [DeepGlobe Road Extraction dataset](https://www.kaggle.com/datasets/balraj98/deepglobe-road-extraction-dataset) contains ~6,226 high-resolution (1024×1024) satellite + mask pairs.
 
-### 3. Advanced Post-Processing Pipeline (`postprocess_v4.py`)
+V1 tiles each 1024×1024 image into **16 non-overlapping 256×256 patches** (4×4 grid):
 
-Raw segmentation masks are noisy. V4 applies a full **graph-theoretic refining pipeline**:
+```
+1024×1024 source image
+       ↓
+Tile into 256×256 patches (no overlap, 4×4 = 16 tiles per image)
+       ↓
+Save to:
+  data/processed/train/images/   ← .jpg tiles
+  data/processed/train/masks/    ← .png binary masks
+```
 
-1. **Threshold & Hole Fill** — `prob > 0.45`; fill holes ≤ 400px to prevent false skeleton loops inside wide roads.
-2. **Noise Removal** — remove speckle objects < 100px; morphological `closing(disk=3)` to smooth boundaries.
-3. **EDT Skeletonize** — convert binary mask to a 1-pixel-wide centerline skeleton.
-4. **sknw Graph** — convert skeleton to a NetworkX MultiGraph (junctions = nodes, road segments = weighted edges with pixel-coordinate paths).
-5. **Prune & Clean** — iteratively remove short spurs (< 20px), collapse false self-loops (< 100px perimeter), remove redundant parallel edges, clean isolated nodes.
-6. **Vectorize** — apply affine transform (pixel coords → projected coords), simplify geometry, export as EPSG:4326 GeoJSON.
+### Dataset & Augmentation (`src/dataset.py`)
 
-> Why a graph instead of morphological gap-closing? A graph lets us reason about *road connectivity* precisely — connecting true endpoints without bloating blobs or destroying topology.
+`RoadSegmentationDataset` loads tiles on the fly. Augmentations applied during training:
 
-### 4. Inference: Sliding Window + 4-Way TTA
+| Category | Transforms |
+| :--- | :--- |
+| Geometric | `HorizontalFlip`, `VerticalFlip`, `RandomRotate90` |
+| Normalization | ImageNet stats: mean `[0.485, 0.456, 0.406]`, std `[0.229, 0.224, 0.225]` |
 
-All four inference scripts share the same strategy:
+---
 
-- **Sliding Window**: 512×512 patches, 256-stride (50% overlap), reflect-padded to cover edges.
-- **4-Way TTA**: Each patch is predicted in 4 orientations (original, H-flip, V-flip, 90° rotate) → averaged → accumulated into full-image probability map.
-- **Normalization**: ImageNet stats (mean=`[0.485, 0.456, 0.406]`, std=`[0.229, 0.224, 0.225]`).
+## 🏋️ Training (`src/train.py`)
+
+| Parameter | Value |
+| :--- | :--- |
+| Epochs | 25 |
+| Batch Size | 16 |
+| Optimizer | Adam (lr=1e-4) |
+| Loss Function | `BCEWithLogitsLoss` |
+| Validation Split | 85% train / 15% val |
+| Metric | IoU (Intersection over Union) |
+| Saves to | `weights/best_model_v1.pth` |
+
+The best model (highest validation IoU) is checkpointed automatically each epoch.
 
 ---
 
 ## 🛠️ Usage Guide
+
+All commands are run from the **repository root**.
 
 ### 1. Setup
 
 ```bash
 git clone https://github.com/lokrim/sanchari-model.git
 cd sanchari-model
+git checkout v1
 pip install -r requirements.txt
 ```
 
-### 1B. Docker Setup (Recommended)
+### 2. Preprocess
+
+Download and tile the DeepGlobe dataset:
 
 ```bash
-docker compose build
+# Manually download from Kaggle and extract to data/raw/train/
+# OR, if the Kaggle CLI is configured:
+# kaggle datasets download balraj98/deepglobe-road-extraction-dataset
+
+python src/preprocess.py
 ```
 
-> `docker-compose.yml` auto-mounts `~/.kaggle` and `~/.config/earthengine` for credentials. Uncomment the `deploy` block for GPU support.
+Output: `data/processed/train/images/` and `data/processed/train/masks/`
 
-**Running APIs via Docker:**
-```bash
-docker compose up sanchari-gee-api      # GEE API  → port 8001
-docker compose up sanchari-local-api    # Local API → port 8000
-```
-
-**Running scripts via Docker:**
-```bash
-docker compose run --rm cli python predict_gee_v4.py
-docker compose run --rm cli python train_v4.py
-```
-
-### 2. Preprocessing
-
-Download the DeepGlobe dataset from Kaggle and tile into 512×512 patches with 50% overlap:
+### 3. Train
 
 ```bash
-python preprocess_v4.py --download
+python src/train.py
 ```
 
-### 3. Training
+Saves the best model to `weights/best_model_v1.pth`.
+
+> Requires a CUDA-capable GPU. CPU training is supported but significantly slower.
+
+### 4. Batch Inference
+
+Run predictions on a folder of 1024×1024 satellite images:
 
 ```bash
-# Phase 1 — Main Training
-python train_v4.py
-
-# Phase 1 + Hard Negative Mining
-python train_v4.py --hard-mining
-
-# Phase 3 — Lovász Fine-Tuning (run after main training)
-python train_v4_lovasz.py
+python src/predict.py --input-folder test-images --output-folder predicted/predictedv1
 ```
 
-> Requires a GPU (RTX 3060+ recommended; tested on RTX 4090).
+For each image, produces a `<name>_pred_mask.png` binary mask in the output folder.
 
-### 4. Inference — Two Modes
+Sample predictions from the dataset are in `predicted/predictedv1/`.
 
-#### A. Google Earth Engine (GEE) 🌍
+### 5. Threshold Optimization
 
-Fetches NAIP or Sentinel-2 imagery live — no local files needed.
+Find the IoU-maximizing threshold on the validation set:
 
 ```bash
-# Batch inference (10 random US city coordinates)
-python predict_gee_v4.py
-
-# Real-time API server
-python main_gee_v4.py --debug
+python src/optimize_threshold.py
 ```
 
-**Endpoint:** `POST /predict` on port **8001**
-```json
-{ "latitude": 30.2672, "longitude": -97.7431 }
-```
+Default threshold is `0.5`. This script sweeps 0.20–0.80 to find the best value.
 
-Optional fields: `"collection"` (default: `USDA/NAIP/DOQQ`), `"zoom"` (default: `1.0` m/px scale).
+### 6. Local GeoTIFF API
 
-Outputs: images to `predicted/predictedv4/`, GeoJSON to `predicted/output-geojson/`.
-
-#### B. Local GeoTIFFs 🗺️
-
-Place `.tif` files in `./geotiffs/`. The API auto-detects the file covering the given coordinate.
+Serve live predictions over a REST API backed by local `.tif` files:
 
 ```bash
-# Batch inference on test images
-python predict_v4.py --input test-images --output predictedv4
-
-# Local API server
-python main_v4.py --debug
+python src/main.py
 ```
 
 **Endpoint:** `POST /predict` on port **8000**
-```json
-{ "latitude": 30.2672, "longitude": -97.7431 }
+
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"latitude": 30.2249, "longitude": -97.7846}'
 ```
 
-Process: Scan GeoTIFFs → find matching file → crop 1024×1024 window → sliding window inference → return GeoJSON.
+Place `.tif` files in `./geotiffs/`. The API scans all `.tif` files, finds the one whose bounds contain the given coordinate, crops a 1024×1024 window, runs inference, and returns a GeoJSON FeatureCollection of road polygons.
+
+> **Note:** V1 returns polygon shapes from rasterio, not a skeletonized road graph. The full graph-theoretic GeoJSON pipeline is introduced in V4.
+
+### 7. Debug Utilities
+
+```bash
+# Verify a coordinate is covered by a local GeoTIFF
+python src/check_coords.py <latitude> <longitude>
+# Example:
+python src/check_coords.py -43.5609 172.7358
+
+# Verify GEE credentials (GEE not used in V1, but useful for future versions)
+python src/check_gee.py
+```
+
+---
+
+## 📂 Project Structure
+
+```
+sanchari-model/                  ← Repo root — run all scripts from here
+├── src/
+│   ├── model.py                 # Custom U-Net architecture (from scratch)
+│   ├── dataset.py               # PyTorch Dataset + Albumentations augmentation
+│   ├── preprocess.py            # Tile 1024×1024 → 256×256 patches
+│   ├── train.py                 # Training loop (BCE loss, Adam, IoU metric)
+│   ├── predict.py               # Batch inference on local images
+│   ├── optimize_threshold.py    # Sweep thresholds to maximize IoU
+│   ├── main.py                  # FastAPI server — local GeoTIFF (port 8000)
+│   ├── check_coords.py          # Debug: coordinate → GeoTIFF coverage check
+│   └── check_gee.py             # Debug: GEE credential check (future use)
+├── data/
+│   ├── raw/train/               # Raw DeepGlobe images and masks
+│   └── processed/train/         # Tiled 256×256 patches (generated by preprocess.py)
+├── weights/
+│   └── best_model_v1.pth        # Best trained model weights
+├── geotiffs/                    # Local GeoTIFF files for the API
+├── test-images/                 # Test satellite images for batch inference
+├── predicted/
+│   ├── predictedv1/             # Batch inference outputs for V1
+│   └── embed/                   # Comparison images across all versions
+├── ipynb/                       # Jupyter notebooks for exploration
+├── requirements.txt
+└── README.md
+```
 
 ---
 
 ## 🌐 API Output — GeoJSON
 
-Both APIs return a **GeoJSON FeatureCollection** of polyline road segments (EPSG:4326), compatible with QGIS, Mapbox, and Leaflet.
+The `main.py` API returns a **GeoJSON FeatureCollection** of road polygon boundaries (EPSG:4326), loadable in QGIS, Mapbox, and Leaflet:
 
 ```json
 {
@@ -191,7 +252,7 @@ Both APIs return a **GeoJSON FeatureCollection** of polyline road segments (EPSG
           [[-97.743, 30.267], [-97.744, 30.268]]
         ]
       },
-      "properties": { "name": "road_network" }
+      "properties": {}
     }
   ]
 }
@@ -199,86 +260,34 @@ Both APIs return a **GeoJSON FeatureCollection** of polyline road segments (EPSG
 
 ---
 
-## 📂 Project Structure
-
-```
-sanchari-model/
-├── model_v4.py              # U-Net++ + EfficientNet-B4 architecture
-├── preprocess_v4.py         # Dataset download + 512×512 tiling
-├── dataset_v4.py            # PyTorch Dataset + Albumentations augmentation
-├── train_v4.py              # Main training loop (ComboLoss + Hard Mining)
-├── train_v4_lovasz.py       # Lovász fine-tuning
-├── postprocess_v4.py        # Graph-theoretic post-processing (shared)
-├── predict_v4.py            # Local batch inference
-├── predict_gee_v4.py        # GEE batch inference
-├── main_v4.py               # Local GeoTIFF FastAPI server (port 8000)
-├── main_gee_v4.py           # GEE FastAPI server (port 8001)
-├── optimize_threshold_v4.py # Threshold optimization on validation set
-├── check_coords.py          # Debug: verify coordinate → GeoTIFF mapping
-├── check_gee.py             # Debug: verify GEE connectivity
-├── test_scripts_v4.py       # Automated pipeline validation tests
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-├── geotiffs/                # Local GeoTIFF files (user-supplied)
-├── weights/                 # Trained model weights
-│   ├── best_model_v4.pth
-│   └── best_model_v4_lovasz.pth
-├── predicted/               # Inference outputs
-└── old-versions/            # V1, V2, V3 archived scripts
-    ├── V1/
-    ├── V2/
-    └── V3/
-```
-
----
-
-## 🔑 Handling Credentials on a New Machine
-
-**Authenticate GEE:**
-```bash
-docker compose run --rm cli earthengine authenticate
-```
-
-**Kaggle credentials:** Place your `kaggle.json` at `~/.kaggle/kaggle.json` before running preprocessing.
-
-**Windows users:** Update the volume mount paths in `docker-compose.yml` — replace the Mac/Linux paths with your Windows username paths (e.g., `C:/Users/YourName/.kaggle`).
-
----
-
-## 📦 Key Dependencies
+## 📦 Dependencies
 
 | Library | Purpose |
-|:---|:---|
-| `torch`, `segmentation_models_pytorch`, `timm` | Model architecture & training |
-| `albumentations` | Image augmentation |
-| `rasterio`, `pyproj` | GeoTIFF I/O & CRS projection |
-| `earthengine-api` | Google Earth Engine access |
-| `sknw`, `networkx` | Skeleton → graph construction & pruning |
-| `shapely`, `geopandas` | Geometry & GeoJSON export |
-| `fastapi`, `uvicorn` | REST API servers |
-| `scikit-image` | Skeletonization & morphological ops |
+| :--- | :--- |
+| `torch`, `torchvision` | U-Net model definition and training |
+| `albumentations` | Image augmentation pipeline |
+| `opencv-python` | Image I/O (BGR→RGB, patch extraction) |
+| `scikit-learn` | Train/validation split |
+| `rasterio`, `pyproj` | GeoTIFF I/O and CRS projection (API) |
+| `fastapi`, `uvicorn`, `pydantic` | REST API server |
+| `kaggle` | Dataset download (preprocessing) |
+| `prettytable` | Check-coords debug output formatting |
+| `tqdm`, `numpy` | Progress bars, numerical ops |
 
 ---
 
-## 🧪 Example API Requests
+## ⚠️ V1 Limitations
 
-**Local GeoTIFF API** (`main_v4.py` — port 8000):
-```bash
-curl -X POST http://localhost:8000/predict \
-  -H "Content-Type: application/json" \
-  -d '{"latitude": 30.224949915094008, "longitude": -97.78460932372762}'
-```
+V1 is intentionally minimal. Known limitations addressed in later versions:
 
-**GEE API** (`main_gee_v4.py` — port 8001):
-```bash
-curl -X POST http://localhost:8001/predict \
-  -H "Content-Type: application/json" \
-  -d '{"latitude": 34.09452, "longitude": -118.27286}'
-```
-
-Both return a GeoJSON FeatureCollection of the road network.
+| Issue | Fix in... |
+| :--- | :--- |
+| ~55% IoU — model trains from scratch, no pretrained features | V2 (ResNet34 transfer learning) |
+| No sliding window — patches at tile edges lose context | V3 (1024×1024 sliding window) |
+| Fragmented predictions — no post-processing beyond thresholding | V3 (morphology), V4 (graph pruning) |
+| No GEE integration — requires local GeoTIFF files | V4 (NAIP + Sentinel-2 via GEE) |
+| Output is polygon mask, not road centerline skeleton | V4 (graph-theoretic skeletonization) |
 
 ---
 
-**License:** MIT
+**License:** MIT | Branch: `v1` | IoU: ~55% | Architecture: Custom U-Net from scratch
