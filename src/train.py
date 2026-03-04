@@ -10,6 +10,7 @@ from sklearn.model_selection import train_test_split
 import pandas as pd
 from tqdm import tqdm
 import segmentation_models_pytorch as smp
+import argparse
 
 from model import create_model
 from dataset import RoadSegmentationDataset, get_transforms
@@ -18,17 +19,38 @@ _SRC_DIR  = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_SRC_DIR)
 CONFIG = {
     "PROCESSED_DATA_DIR": os.path.join(_REPO_ROOT, 'data', 'processed', 'train'),
-    "MODEL_SAVE_PATH": os.path.join(_REPO_ROOT, 'weights', 'best_model_v2.pth'),
-    "LOG_FILE": os.path.join(_REPO_ROOT, 'training_log_v2.csv'),
+    "MODEL_SAVE_PATH": os.path.join(_REPO_ROOT, 'weights', 'best_model_v3.pth'),
+    "CHECKPOINT_PATH": os.path.join(_REPO_ROOT, 'checkpoint_v3.pth'),
+    "LOG_FILE": os.path.join(_REPO_ROOT, 'training_log_v3.csv'),
     "LEARNING_RATE": 1e-4,
     "WEIGHT_DECAY": 1e-5,
     "BATCH_SIZE": 16,
-    "NUM_EPOCHS": 75,
-    "VALIDATION_SPLIT": 0.15,
-    "ENCODER": "resnet34",
-    "PRETRAINED": "imagenet",
+    "NUM_EPOCHS": 50,
     "SCHEDULER_T_MAX": 75,
+    "VALIDATION_SPLIT": 0.15,
+    "INPUT_SHAPE": (256, 256),
 }
+
+# --- Custom Dice Loss ---
+class DiceLoss(nn.Module):
+    """
+    Dice Loss for binary segmentation.
+    Optimizes the Overlap (Intersection over Union related metric).
+    Range: 0 (perfect overlap) to 1 (no overlap).
+    """
+    def __init__(self, smooth=1):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+
+    def forward(self, inputs, targets, smooth=1):
+        # Flatten label and prediction tensors
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+        
+        intersection = (inputs * targets).sum()
+        dice = (2.*intersection + smooth)/(inputs.sum() + targets.sum() + smooth)
+        
+        return 1 - dice
 
 def iou_metric(preds, labels, threshold=0.5):
     """Calculates Intersection over Union (IoU) for a batch."""
@@ -71,16 +93,29 @@ def evaluate(loader, model, loss_fn, device):
             loop.set_postfix(val_iou=iou)
     return val_loss / len(loader), val_iou / len(loader)
 
+def save_checkpoint(state, filename):
+    print(f"=> Saving checkpoint to {filename}")
+    torch.save(state, filename)
+
+def load_checkpoint(checkpoint, model, optimizer):
+    print("=> Loading checkpoint")
+    model.load_state_dict(checkpoint['state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    return checkpoint.get('epoch', 0), checkpoint.get('best_val_iou', -1.0)
+
 def main():
-    """Main function to orchestrate the V2 training process."""
-    print("Starting V2 training process...")
+    parser = argparse.ArgumentParser(description="Train V3 Model")
+    parser.add_argument("--resume", action="store_true", help="Resume training from checkpoint")
+    args = parser.parse_args()
+
+    print("Starting V3 training process...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # --- Dataset and Dataloaders ---
     image_dir = os.path.join(CONFIG["PROCESSED_DATA_DIR"], 'images')
     mask_dir = os.path.join(CONFIG["PROCESSED_DATA_DIR"], 'masks')
-    all_files = sorted(os.listdir(image_dir))
+    all_files = sorted([f for f in os.listdir(image_dir) if f.endswith('.jpg')])
     train_files, val_files = train_test_split(all_files, test_size=CONFIG["VALIDATION_SPLIT"], random_state=42)
 
     train_dataset = RoadSegmentationDataset(image_dir, mask_dir, train_files, get_transforms(train=True))
@@ -88,25 +123,37 @@ def main():
 
     train_loader = DataLoader(train_dataset, batch_size=CONFIG["BATCH_SIZE"], shuffle=True, num_workers=2, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=CONFIG["BATCH_SIZE"], shuffle=False, num_workers=2, pin_memory=True)
-    print(f"Training samples: {len(train_dataset)}, Validation samples: {len(val_dataset)}")
-
+    
     # --- Model, Loss, Optimizer, Scheduler ---
     model = create_model().to(device)
     loss_fn = smp.losses.DiceLoss(mode='binary')
     optimizer = optim.AdamW(model.parameters(), lr=CONFIG["LEARNING_RATE"], weight_decay=CONFIG["WEIGHT_DECAY"])
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=CONFIG["SCHEDULER_T_MAX"])
 
+    start_epoch = 0
+    best_val_iou = -1.0
+    
+    # --- Resume Logic ---
+    if args.resume and os.path.exists(CONFIG["CHECKPOINT_PATH"]):
+        checkpoint = torch.load(CONFIG["CHECKPOINT_PATH"], map_location=device)
+        start_epoch, best_val_iou = load_checkpoint(checkpoint, model, optimizer)
+        # Adjust scheduler to the correct epoch
+        for _ in range(start_epoch):
+            scheduler.step()
+        print(f"Resumed from epoch {start_epoch} with Best IoU: {best_val_iou:.4f}")
+    
     # --- Logging Setup ---
-    log_df = pd.DataFrame(columns=['epoch', 'train_loss', 'val_loss', 'val_iou', 'learning_rate'])
+    if args.resume and os.path.exists(CONFIG["LOG_FILE"]):
+        log_df = pd.read_csv(CONFIG["LOG_FILE"])
+    else:
+        log_df = pd.DataFrame(columns=['epoch', 'train_loss', 'val_loss', 'val_iou', 'learning_rate'])
 
     # --- Training Loop ---
-    best_val_iou = -1.0
-    for epoch in range(CONFIG["NUM_EPOCHS"]):
+    for epoch in range(start_epoch, CONFIG["NUM_EPOCHS"]):
         print(f"\n--- Epoch {epoch+1}/{CONFIG['NUM_EPOCHS']} ---")
         train_loss = train_one_epoch(train_loader, model, optimizer, loss_fn, device)
         val_loss, val_iou = evaluate(val_loader, model, loss_fn, device)
         
-        # Step the scheduler
         scheduler.step()
         current_lr = optimizer.param_groups[0]['lr']
 
@@ -117,8 +164,19 @@ def main():
         log_df = pd.concat([log_df, new_log], ignore_index=True)
         log_df.to_csv(CONFIG["LOG_FILE"], index=False)
 
+        # Save Checkpoint (Every Epoch for safety)
+        checkpoint = {
+            'state_dict': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'epoch': epoch + 1,
+            'best_val_iou': best_val_iou, # Keep the global best
+        }
+        save_checkpoint(checkpoint, CONFIG["CHECKPOINT_PATH"])
+
+        # Save Best Model
         if val_iou > best_val_iou:
             best_val_iou = val_iou
+            # Update best IoU in checkpoint meta-data if needed, but 'best_val_iou' variable tracks it
             torch.save(model.state_dict(), CONFIG["MODEL_SAVE_PATH"])
             print(f"  -> New best model saved to {CONFIG['MODEL_SAVE_PATH']} (IoU: {best_val_iou:.4f})")
 

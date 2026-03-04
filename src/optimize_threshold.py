@@ -3,10 +3,10 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import torch
-from torch.utils.data import DataLoader
-from sklearn.model_selection import train_test_split
 import numpy as np
 from tqdm import tqdm
+from torch.utils.data import DataLoader
+from sklearn.model_selection import train_test_split
 
 from model import create_model
 from dataset import RoadSegmentationDataset, get_transforms
@@ -15,85 +15,176 @@ _SRC_DIR  = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_SRC_DIR)
 CONFIG = {
     "PROCESSED_DATA_DIR": os.path.join(_REPO_ROOT, 'data', 'processed', 'train'),
-    "MODEL_PATH": os.path.join(_REPO_ROOT, 'weights', 'best_model_v2.pth'),
-    "BATCH_SIZE": 32,
-    "VALIDATION_SPLIT": 0.15,
+    "MODEL_PATH": os.path.join(_REPO_ROOT, 'weights', 'best_model_v3.pth'),
+    "BATCH_SIZE": 16,
+    "VALIDATION_SPLIT": 0.15
 }
 
-def iou_metric(preds, labels, threshold):
-    """Calculates IoU for a given threshold."""
-    preds = torch.sigmoid(preds) > threshold
-    preds, labels = preds.byte(), labels.byte()
-    intersection = (preds & labels).float().sum()
-    union = (preds | labels).float().sum()
-    return (intersection + 1e-6) / (union + 1e-6)
+"""
+Threshold Optimization Script for V3 Model.
 
-def find_optimal_threshold(model, loader, device):
+This script calculates the optimal probability threshold for binary classification
+by evaluating the Intersection over Union (IoU) score across a range of thresholds.
+
+Key Features:
+1. Loads the trained V3 model.
+2. Recreates the exact Validation Set used during training (using same random seed).
+3. Runs inference on the validation set with Test Time Augmentation (4-way TTA).
+4. Grid searches for the threshold (0.1 to 0.9) that maximizes IoU.
+5. Applies the full morphological post-processing pipeline during evaluation to ensure
+   the threshold is optimized for the final output quality.
+"""
+
+def calculate_iou(preds, labels, threshold):
     """
-    Finds the optimal prediction threshold on the validation set.
+    Calculates the IoU score for a given threshold, including morphological post-processing.
+    
+    Args:
+        preds (np.array): Array of probability maps (N, H, W).
+        labels (np.array): Array of ground truth binary masks (N, H, W).
+        threshold (float): Probability threshold to apply.
+        
+    Returns:
+        float: The mean IoU score.
     """
-    model.eval()
-    thresholds = np.arange(0.2, 0.8, 0.02) # Test a range of thresholds
-    best_iou = 0
-    best_threshold = 0
+    from skimage.morphology import remove_small_objects, closing, disk
+    
+    # preds: (N, H, W) probabilities
+    # labels: (N, H, W) binary
+    
+    preds_bin = (preds > threshold)
+    
+    # Apply morphology (this will be slow but accurate to what predict_v3 does)
+    # Since we are doing it on the whole validation set array, it might be memory intensive.
+    # It's better to process image by image if N is large, but for standard val set it might fit.
+    # Actually, skimage functions work on single images or batches? 
+    # remove_small_objects works on boolean array. If 3D (N,H,W), it treats it as 3D object? 
+    # YES. We must iterate to behave like 2D prediction.
+    
+    # Optimization: To avoid 3D connectivity issues, iterate or use a trick.
+    # Let's simple iterate for correctness.
+    
+    intersections = 0.0
+    unions = 0.0
+    
+    for i in range(len(preds_bin)):
+        mask = preds_bin[i]
+        
+        # 1. Remove small noise
+        try:
+            mask = remove_small_objects(mask, max_size=100)
+        except TypeError:
+             mask = remove_small_objects(mask, min_size=100)
+             
+        # 2. Close gaps
+        mask = closing(mask, footprint=disk(3))
+        
+        lbl = labels[i]
+        intersections += (mask & lbl).sum()
+        unions += (mask | lbl).sum()
 
-    all_preds = []
-    all_targets = []
-
-    print("Gathering predictions from validation set...")
-    with torch.no_grad():
-        for data, targets in tqdm(loader, desc="Predicting"):
-            preds = model(data.to(device))
-            all_preds.append(preds.cpu())
-            all_targets.append(targets.cpu())
-
-    all_preds = torch.cat(all_preds)
-    all_targets = torch.cat(all_targets)
-
-    print("\nSearching for optimal threshold...")
-    for threshold in tqdm(thresholds, desc="Thresholding"):
-        iou_scores = [iou_metric(p, t, threshold) for p, t in zip(all_preds, all_targets)]
-        current_iou = np.mean(iou_scores)
-
-        if current_iou > best_iou:
-            best_iou = current_iou
-            best_threshold = threshold
-            print(f"  New best IoU: {best_iou:.4f} at threshold: {best_threshold:.2f}")
-
-    return best_threshold, best_iou
+    return (intersections + 1e-6) / (unions + 1e-6)
 
 def main():
     """
-    Main function to load the model and find the best threshold.
+    Main execution flow.
+    1. Prepare Validation Data.
+    2. Load Model.
+    3. Generate Predictions (with TTA).
+    4. Perform Grid Search for Threshold.
     """
-    print("Starting threshold optimization...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    print(f"Optimizing threshold using device: {device}")
 
-    # --- Load Model ---
-    if not os.path.exists(CONFIG["MODEL_PATH"]):
-        print(f"Error: Model file not found at {CONFIG['MODEL_PATH']}. Please run train.py first.")
-        return
-    model = create_model().to(device)
-    model.load_state_dict(torch.load(CONFIG["MODEL_PATH"], map_location=device))
-    print(f"Model loaded from {CONFIG['MODEL_PATH']}")
-
-    # --- Validation Dataset and Dataloader ---
+    # 1. Setup Data (Validation Set)
     image_dir = os.path.join(CONFIG["PROCESSED_DATA_DIR"], 'images')
     mask_dir = os.path.join(CONFIG["PROCESSED_DATA_DIR"], 'masks')
-    all_files = sorted(os.listdir(image_dir))
+    all_files = sorted([f for f in os.listdir(image_dir) if f.endswith('.jpg')])
+    
+    # Use same seed as training to get the same validation set
     _, val_files = train_test_split(all_files, test_size=CONFIG["VALIDATION_SPLIT"], random_state=42)
-
+    
     val_dataset = RoadSegmentationDataset(image_dir, mask_dir, val_files, get_transforms(train=False))
-    val_loader = DataLoader(val_dataset, batch_size=CONFIG["BATCH_SIZE"], shuffle=False, num_workers=2, pin_memory=True)
-    print(f"Using {len(val_dataset)} validation samples to find the best threshold.")
+    val_loader = DataLoader(val_dataset, batch_size=CONFIG["BATCH_SIZE"], shuffle=False, num_workers=2)
+    
+    print(f"Evaluating on {len(val_dataset)} validation images.")
 
-    # --- Find Threshold ---
-    optimal_threshold, max_iou = find_optimal_threshold(model, val_loader, device)
+    # 2. Load Model
+    model = create_model().to(device)
+    if not os.path.exists(CONFIG["MODEL_PATH"]):
+        print(f"Error: {CONFIG['MODEL_PATH']} not found.")
+        return
+    model.load_state_dict(torch.load(CONFIG["MODEL_PATH"], map_location=device))
+    model.eval()
 
-    print("\n--- Optimization Complete ---")
-    print(f"Optimal Threshold: {optimal_threshold:.2f}")
-    print(f"Maximum IoU on Validation Set: {max_iou:.4f}")
+    # 3. Collect Predictions and Targets
+    all_preds = []
+    all_targets = []
 
-if __name__ == '__main__':
+    print("Running inference with TTA...")
+    from skimage.morphology import remove_small_objects, closing, disk
+    
+    with torch.no_grad():
+        for data, target in tqdm(val_loader):
+            data = data.to(device)
+            # TTA: Test Time Augmentation
+            # 1. Original
+            logits = model(data)
+            probs = torch.sigmoid(logits)
+            
+            # 2. Horizontal Flip
+            data_h = torch.flip(data, [3])
+            logits_h = model(data_h)
+            probs_h = torch.flip(torch.sigmoid(logits_h), [3])
+            
+            # 3. Vertical Flip
+            data_v = torch.flip(data, [2])
+            logits_v = model(data_v)
+            probs_v = torch.flip(torch.sigmoid(logits_v), [2])
+            
+            # 4. Rotate 90
+            data_rot = torch.rot90(data, 1, [2, 3])
+            logits_rot = model(data_rot)
+            probs_rot = torch.rot90(torch.sigmoid(logits_rot), -1, [2, 3])
+            
+            # Average
+            probs_avg = (probs + probs_h + probs_v + probs_rot) / 4.0
+            
+            # To Numpy
+            probs_np = probs_avg.cpu().numpy().squeeze(1)
+            targets_np = target.cpu().numpy().squeeze(1).astype(bool)
+
+            # Post-processing per image in batch
+            # Note: Threshold optimization is tricky with morphology because morphology is binary.
+            # However, morphology happens AFTER thresholding.
+            # To correctly optimize threshold WITH morphology, we must apply threshold inside the optimization loop.
+            # But that is too slow to re-run morphology for every threshold step.
+            # Strategy: 
+            # 1. We essentially optimizing the "base" threshold.
+            
+            all_preds.append(probs_np)
+            all_targets.append(targets_np)
+
+    all_preds = np.concatenate(all_preds)
+    all_targets = np.concatenate(all_targets)
+
+    # 4. Grid Search for Best Threshold
+    print("Searching for optimal threshold...")
+    thresholds = np.arange(0.1, 0.9, 0.05)
+    best_iou = 0
+    best_thresh = 0.5
+
+    for t in thresholds:
+        iou = calculate_iou(all_preds, all_targets, t)
+        print(f"Threshold {t:.2f}: IoU = {iou:.4f}")
+        if iou > best_iou:
+            best_iou = iou
+            best_thresh = t
+
+    print(f"\n--- Result ---")
+    print(f"Best Threshold: {best_thresh:.2f}")
+    print(f"Best IoU:       {best_iou:.4f}")
+    print(f"Improvement:    {best_iou - calculate_iou(all_preds, all_targets, 0.5):.4f} over default (0.5)")
+
+if __name__ == "__main__":
     main()

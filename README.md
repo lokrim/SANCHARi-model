@@ -1,90 +1,102 @@
 # SANCHARi 🛰️🛣️
 
-**Satellite Road Extraction Pipeline — V2 (Transfer Learning)**
+**Satellite Road Extraction Pipeline — V3 (Sliding Window + TTA + Morphology)**
 
-> **Branch:** `v2` — The first major leap. Replaces the custom U-Net from scratch with a **ResNet34 encoder pretrained on ImageNet**, delivering a +13pp IoU jump over V1.
+> **Branch:** `v3` — Precision leap. Same ResNet34-UNet backbone as V2, but introduces **sliding window inference**, **4-way Test Time Augmentation**, **morphological post-processing**, **skeletonization**, and a **GeoJSON API** (local GeoTIFF + optional GEE).
 
 > **Mission:** Democratizing satellite-based road mapping. SANCHARi provides an open-source pipeline for extracting road networks from satellite imagery — enabling accessible GIS for disaster relief, urban planning, and regions where vector maps are outdated or absent.
 
-| ![V2 Satellite Input](predicted/embed/v2_sat.jpg) |
+| ![V3 Satellite Input](predicted/embed/v3_sat.jpg) |
 |:---:|
 | *Raw satellite input (DeepGlobe dataset)* |
 
-| ![V2 Prediction](predicted/embed/v2_pred_mask.png) | ![V2 Ground Truth](predicted/embed/v2_truth_mask.png) |
+| ![V3 Prediction](predicted/embed/v3_pred_mask.png) | ![V3 Ground Truth](predicted/embed/v3_truth_mask.png) |
 |:---:|:---:|
-| *V2 Predicted mask (~68% IoU)* | *Ground truth mask* |
+| *V3 Predicted mask (~75% IoU)* | *Ground truth mask* |
 
 ---
 
 ## 🚀 Version Evolution
 
-V2 is the **transfer learning** branch — the jump from training from scratch to leveraging ImageNet features:
+V3 is the **inference quality** branch — same strong backbone as V2, major precision gains from how the model is applied:
 
-| Feature | V1 (Baseline) | **V2 (This Branch)** | V3 (Refinement) | V4 (State-of-the-Art) |
+| Feature | V1 | V2 | **V3 (This Branch)** | V4 |
 | :--- | :--- | :--- | :--- | :--- |
-| **Architecture** | Custom U-Net (scratch) | **ResNet34-UNet (SMP)** | ResNet34-UNet + Attention | U-Net++ w/ EfficientNet-B4 |
-| **Input Patching** | 256×256 direct | **256×256 direct** | 1024×1024 Sliding | 512×512 (50% Overlap) |
-| **Loss Function** | BCE Loss | **Dice Loss** | Dice | Combo (Dice+Focal) → Lovász |
-| **Augmentation** | Basic flips | **+GridDistortion, ElasticTransform** | Standard | GridDistortion + ElasticTransform |
-| **Optimizer** | Adam | **AdamW + Cosine Annealing** | AdamW | AdamW + Cosine Annealing |
-| **Inference** | Direct patch | **Direct patch** | 4-Way TTA | Sliding Window + 4-Way TTA |
-| **Post-Processing** | Threshold only | **Threshold only** | Basic morphology | Graph-theoretic (sknw + NetworkX) |
-| **Output** | PNG mask | **PNG mask** | PNG + basic GeoJSON | Skeleton + GeoJSON FeatureCollection |
-| **IoU Score** | ~55% | **~68%** | ~75% | ~80% |
+| **Architecture** | Custom U-Net | ResNet34-UNet | **ResNet34-UNet** | U-Net++ w/ EfficientNet-B4 |
+| **Inference Strategy** | 256×256 direct patch | 256×256 direct patch | **1024×1024 Sliding Window (stride=128)** | 512×512 (50% Overlap) |
+| **Test Time Augmentation** | None | None | **4-Way TTA (H-flip, V-flip, Rot90)** | 4-Way TTA |
+| **Post-Processing** | Threshold only | Threshold only | **Morphology (remove noise, close gaps) + Skeletonize** | Graph-theoretic (sknw + NetworkX) |
+| **Output Format** | PNG mask | PNG mask | **PNG mask + Skeleton + GeoJSON LineString** | Skeleton + GeoJSON FeatureCollection |
+| **GEE Integration** | None | None | **Optional (NAIP / Sentinel-2)** | Full (NAIP + Sentinel-2) |
+| **Resume Training** | No | No | **Yes (checkpoint)** | Yes |
+| **IoU Score** | ~55% | ~68% | **~75%** | ~80% |
 
 ---
 
-## 🧠 V2 Architecture: ResNet34 + U-Net (Transfer Learning)
-
-V2 replaces the hand-crafted encoder with a **pretrained ResNet34** via [`segmentation_models_pytorch`](https://github.com/qubvel/segmentation_models.pytorch):
+## 🧠 V3 Architecture & Inference Pipeline
 
 ```
-Input (256×256×3 RGB)
+Input (Large Satellite Image — 1024×1024)
        ↓
-ResNet34 Encoder (pretrained on ImageNet)
-   Stage 1–5: rich hierarchical feature maps
-   (edges → textures → object parts → semantics)
+Sliding Window (256×256 patches, stride=128 → 50% overlap)
+   For each patch:
+   ┌────────────────────────────────────────────────────┐
+   │  4-Way Test Time Augmentation (TTA)                │
+   │  1. Original                                       │
+   │  2. Horizontal flip → predict → unflip            │
+   │  3. Vertical flip → predict → unflip              │
+   │  4. Rotate 90° → predict → unrotate              │
+   │  → Average all 4 probability maps                 │
+   └────────────────────────────────────────────────────┘
        ↓
-U-Net Decoder (SMP standard)
-   Skip connections from each ResNet stage
-   Bilinear upsampling back to 256×256
+Accumulate & average overlapping patch probabilities
        ↓
-Output logit map (256×256×1)
+Post-Processing:
+   1. Threshold at 0.45 → binary mask
+   2. remove_small_objects (max_size=100) — noise removal
+   3. closing (disk=3) — gap bridging
+   4. skeletonize → 1-pixel road centerlines
        ↓
-Sigmoid → threshold at 0.4 → binary road mask
+Vectorize → GeoJSON LineString FeatureCollection (WGS84)
 ```
 
-**Why transfer learning over training from scratch?**
+**Why sliding window + TTA over V2's direct patching?**
 
-ResNet34 was pretrained on 1.2M ImageNet images. Its early layers already encode universal visual features — edges, gradients, texture patterns — that transfer directly to aerial imagery. V2 fine-tunes these representations for road detection rather than learning them from zero, which is why it achieves **+13pp IoU** over V1 with the same dataset and patch size.
+V2 feeds non-overlapping 256×256 patches: objects at tile boundaries are cut off mid-context. V3's 50% overlap means every road segment is predicted multiple times and averaged — reducing edge artifacts dramatically. TTA further reduces variance by averaging geometric augmentations aligned to likely road orientations.
 
 ---
 
 ## 🗂️ Data Pipeline
 
-### Dataset & Preprocessing
+### Preprocessing (`src/preprocess.py`)
 
-V2 uses the same **256×256 tiled patches** from the DeepGlobe Road Extraction dataset as V1. If you already have `data/processed/train/` from a V1 run, you can skip preprocessing entirely.
+V3 introduces an improved tiling pipeline over V1:
+- Uses `rasterio` for robust GeoTIFF reading (preserves multi-spectral data correctly)
+- `cv2.BORDER_REFLECT` padding avoids black-edge artifacts on image borders
 
-Use any external preprocessing script or the V1 `preprocess.py` to tile the raw DeepGlobe images:
+```bash
+python src/preprocess.py
 ```
-data/raw/train/*_sat.jpg + *_mask.png
-   ↓ tile into 256×256 patches (4×4 grid per image)
+
+```
+data/raw/train/*_sat.jpg + *_mask.png     ← raw DeepGlobe images
+   ↓ rasterio read → 256×256 tile + reflect-pad
 data/processed/train/images/   ← .jpg tiles
 data/processed/train/masks/    ← .png binary masks
 ```
 
 ### Augmentation (`src/dataset.py`)
 
-V2 extends V1's basic augmentations with deformation transforms:
+V3 adds **color augmentations** on top of V2's deformation suite:
 
 | Category | Transforms |
 | :--- | :--- |
-| Geometric | `HorizontalFlip`, `VerticalFlip`, `RandomRotate90` |
-| Deformation | `GridDistortion(p=0.2)`, `ElasticTransform(p=0.2)` |
+| Geometric | `HorizontalFlip`, `VerticalFlip`, `Rotate(90°)`, `Transpose` |
+| Deformation | `GridDistortion(p=0.5)`, `ElasticTransform(p=0.5)` |
+| Color/Intensity | `RandomBrightnessContrast(p=0.5)`, `HueSaturationValue(p=0.3)` |
 | Normalization | ImageNet stats: mean `[0.485, 0.456, 0.406]`, std `[0.229, 0.224, 0.225]` |
 
-`GridDistortion` and `ElasticTransform` are new to V2 — they simulate terrain-induced warping in satellite imagery, making the model more robust to geometric distortions in real-world predictions.
+`HueSaturationValue` and `RandomBrightnessContrast` make the model robust to seasonal and lighting variations across satellite imagery.
 
 ---
 
@@ -92,107 +104,147 @@ V2 extends V1's basic augmentations with deformation transforms:
 
 | Parameter | Value |
 | :--- | :--- |
-| Epochs | 75 |
+| Epochs | 50 |
 | Batch Size | 16 |
 | Optimizer | AdamW (lr=1e-4, weight_decay=1e-5) |
 | Scheduler | CosineAnnealingLR (T_max=75) |
 | Loss Function | `smp.losses.DiceLoss(mode='binary')` |
 | Validation Split | 85% train / 15% val |
-| Metric | IoU (Intersection over Union) |
-| Saves to | `weights/best_model_v2.pth` |
-| Training log | `training_log_v2.csv` (epoch, loss, IoU, LR) |
+| Checkpoint | `checkpoint_v3.pth` (resumes with `--resume`) |
+| Saves to | `weights/best_model_v3.pth` |
+| Training log | `training_log_v3.csv` |
 
-**Why Dice Loss over BCE?**
+V3 adds **checkpoint resumption** — training can be interrupted and continued:
 
-BCE treats every pixel equally. Dice Loss directly optimizes the overlap ratio between prediction and ground truth — a better proxy for IoU when road pixels are a small fraction of the total image (class imbalance problem).
-
-**Why AdamW + Cosine Annealing?**
-
-AdamW adds proper weight decay (not coupled to the gradient step like in Adam), improving generalization. Cosine Annealing smoothly reduces the learning rate rather than stepping it down, allowing finer convergence in the later epochs.
+```bash
+python src/train.py               # start fresh
+python src/train.py --resume      # resume from checkpoint_v3.pth
+```
 
 ---
 
 ## 🛠️ Usage Guide
 
-All commands run from the **repository root** or from `src/` — paths are resolved from the script's location either way.
+All scripts resolve paths from the script's own location — run from **any working directory**.
 
 ### 1. Setup
 
 ```bash
 git clone https://github.com/lokrim/sanchari-model.git
 cd sanchari-model
-git checkout v2
+git checkout v3
 pip install -r requirements.txt
 ```
 
-### 2. Prepare Data
-
-Tile DeepGlobe images into 256×256 patches (skip if you already have `data/processed/` from V1):
+### 2. Preprocess Data
 
 ```bash
-# manually download DeepGlobe from Kaggle and extract to data/raw/train/
-# then tile:
-python src/preprocess.py    # if you have a preprocess script
-```
-
-Expected structure after preprocessing:
-```
-data/processed/train/
-├── images/   ← 256×256 .jpg tiles
-└── masks/    ← 256×256 .png binary masks
+python src/preprocess.py   # tiles DeepGlobe data to 256×256 patches
 ```
 
 ### 3. Train
 
 ```bash
 python src/train.py
+# Or resume:
+python src/train.py --resume
 ```
 
-Saves best checkpoint to `weights/best_model_v2.pth` and logs per-epoch metrics to `training_log_v2.csv`.
+### 4. Batch Inference (Local Images)
 
-> Requires a CUDA-capable GPU. RTX 3060+ recommended (tested on RTX 4090).
-
-### 4. Batch Inference
-
-Run predictions on a folder of 1024×1024 satellite images:
+Runs the full pipeline (sliding window + TTA + morphology + skeletonize) on a folder of images:
 
 ```bash
-python src/predict.py --input-folder test-images --output-folder predicted/predictedv2
+python src/predict.py --input test-images --output predicted/predictedv3
 ```
 
-Each image is tiled into 256×256 patches, predicted independently, and reassembled into a full mask. Output files are saved as `<name>_pred_mask_v2.png`.
+Outputs per image: `_input.jpg`, `_prob.png`, `_mask.png`, `_skeleton.png`, `_overlay.jpg`
 
-### 5. Threshold Optimization
+### 5. Local GeoTIFF API Server
 
-Find the IoU-maximizing classification threshold on the validation set (default is `0.4`):
+Serves predictions from local GeoTIFF files via FastAPI:
+
+```bash
+python src/main.py                # normal mode
+python src/main.py --debug        # saves intermediate images to predicted/predictedv3
+```
+
+```bash
+curl -X POST "http://localhost:8000/predict" \
+     -H "Content-Type: application/json" \
+     -d '{"latitude": 30.2241, "longitude": -97.7816}'
+```
+
+Returns a GeoJSON `FeatureCollection` with `LineString` features in WGS84.
+
+### 6. GEE API Server *(Optional)*
+
+Fetches satellite imagery from Google Earth Engine on demand (requires authenticated GEE account):
+
+```bash
+python src/main_gee.py --debug    # Port 8001
+```
+
+```bash
+curl -X POST "http://localhost:8001/predict" \
+     -H "Content-Type: application/json" \
+     -d '{"latitude": 40.763, "longitude": -73.970}'
+```
+
+### 7. Batch GEE Inference
+
+Runs predictions across 10 random coordinates near major US cities:
+
+```bash
+python src/predict_gee.py
+```
+
+### 8. Threshold Optimization
 
 ```bash
 python src/optimize_threshold.py
 ```
 
-Sweeps thresholds from 0.20 to 0.80 and prints the optimal value.
+Sweeps thresholds 0.10–0.90 with full TTA + morphology applied, prints optimal threshold.
+
+### 9. Tests
+
+```bash
+python src/test_scripts.py
+```
+
+Covers: model creation, Dice loss, dataset loading, sliding window inference, morphological ops, coordinate utils.
 
 ---
 
 ## 📂 Project Structure
 
 ```
-sanchari-model/                  ← Repo root — scripts resolve paths from here
+sanchari-model/
 ├── src/
-│   ├── model.py                 # create_model(): ResNet34-UNet via SMP
-│   ├── dataset.py               # RoadSegmentationDataset + V2 augmentations
-│   ├── train.py                 # Training loop (Dice loss, AdamW, CosineAnnealing)
-│   ├── predict.py               # Batch inference on local image folder
-│   └── optimize_threshold.py   # Sweep thresholds to find best IoU on val set
+│   ├── model.py               # create_model(): ResNet34-UNet via SMP
+│   ├── dataset.py             # RoadSegmentationDataset + V3 augmentations
+│   ├── train.py               # Training loop with checkpoint resumption
+│   ├── preprocess.py          # Tiling pipeline (rasterio + reflect-pad)
+│   ├── predict.py             # Batch inference (sliding window + TTA + morphology)
+│   ├── optimize_threshold.py  # Threshold sweep with TTA on validation set
+│   ├── main.py                # FastAPI local GeoTIFF server (port 8000)
+│   ├── main_gee.py            # FastAPI GEE server (port 8001)
+│   ├── predict_gee.py         # Batch GEE inference across US cities
+│   └── test_scripts.py        # Unit tests for all pipeline components
 ├── data/
-│   ├── raw/train/               # Raw DeepGlobe images and masks
-│   └── processed/train/         # Tiled 256×256 patches
+│   ├── raw/train/             # Raw DeepGlobe images
+│   └── processed/train/       # Tiled 256×256 patches
 ├── weights/
-│   └── best_model_v2.pth        # Best trained model weights
-├── test-images/                 # Test satellite images for batch inference
+│   └── best_model_v3.pth      # Best trained model weights
+├── geotiffs/                  # Local GeoTIFFs (for main.py)
+├── test-images/               # Test images for batch inference
 ├── predicted/
-│   └── embed/                   # Comparison images across all versions
-├── training_log_v2.csv          # Per-epoch training metrics (generated by train.py)
+│   ├── predictedv3/           # Inference outputs (mask, skeleton, overlay, prob)
+│   └── output-geojson/        # Vectorized GeoJSON road centerlines
+│   └── embed/                 # Comparison images across all versions
+├── checkpoint_v3.pth          # Training checkpoint (resume support)
+├── training_log_v3.csv        # Per-epoch training metrics
 ├── requirements.txt
 └── README.md
 ```
@@ -204,28 +256,31 @@ sanchari-model/                  ← Repo root — scripts resolve paths from he
 | Library | Purpose |
 | :--- | :--- |
 | `torch`, `torchvision` | Model training and inference |
-| `segmentation-models-pytorch` | ResNet34-UNet architecture + Dice loss |
-| `albumentations` | Image augmentation pipeline |
-| `opencv-python` | Image I/O (BGR→RGB, patch extraction) |
-| `scikit-learn` | Train/validation split |
-| `pandas` | Training log CSV |
+| `segmentation-models-pytorch` | ResNet34-UNet + Dice loss |
+| `albumentations` | Augmentation pipeline |
+| `opencv-python` | Image I/O, patch tiling, overlay |
+| `scikit-image` | `skeletonize`, `remove_small_objects`, `closing` |
+| `rasterio` | GeoTIFF I/O + pixel coordinate mapping |
+| `pyproj` | CRS transforms (WGS84 ↔ Web Mercator) |
+| `fastapi`, `uvicorn`, `pydantic` | API server |
+| `earthengine-api`, `requests` | GEE integration (optional) |
+| `scikit-learn`, `pandas` | Train/val split, training log |
 | `kaggle` | Dataset download |
 | `tqdm`, `numpy` | Progress bars, numerical ops |
 
 ---
 
-## ⚠️ V2 Limitations
+## ⚠️ V3 Limitations
 
-V2 achieves ~68% IoU — a major improvement over V1. Remaining gaps addressed in V3/V4:
+V3 achieves ~75% IoU and produces clean road centerlines. Remaining gaps addressed in V4:
 
 | Issue | Fix in... |
 | :--- | :--- |
-| No sliding window — patches at tile edges still lose context | V3 (1024×1024 sliding window) |
-| No Test Time Augmentation — single-pass inference | V3 (4-Way TTA) |
-| Fragmented predictions — thresholding only, no topology repair | V3 (morphology), V4 (graph pruning) |
-| No GEE integration | V4 (NAIP + Sentinel-2 via GEE API) |
-| Output format is PNG mask, not road centerline | V4 (graph-theoretic skeletonization + GeoJSON) |
+| Road graph has dangling branches and "hairs" from simple skeletonization | V4 (graph pruning via sknw + NetworkX) |
+| GEE NAIP is US-only (Sentinel-2 at 10m resolution too coarse) | V4 (improved collection handling) |
+| No topological output — roads are individual LineStrings, not a connected graph | V4 (GeoJSON FeatureCollection with graph topology) |
+| EfficientNet backbone would extract richer features | V4 (U-Net++ w/ EfficientNet-B4) |
 
 ---
 
-**License:** MIT | Branch: `v2` | IoU: ~68% | Architecture: ResNet34-UNet (SMP) | Loss: Dice
+**License:** MIT | Branch: `v3` | IoU: ~75% | Architecture: ResNet34-UNet (SMP) | Inference: Sliding Window + 4-Way TTA | Post-Processing: Morphology + Skeletonization

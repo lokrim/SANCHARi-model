@@ -1,4 +1,4 @@
-# SANCHARi V2 — Dependencies
+# SANCHARi V3 — Dependencies
 # Install with: pip install -r requirements.txt
 
 # Deep learning
@@ -12,11 +12,25 @@ segmentation-models-pytorch
 numpy
 opencv-python
 albumentations
+scikit-image
+
+# Geospatial processing
+rasterio
+pyproj
+
+# API server (local GeoTIFF mode)
+fastapi
+uvicorn
+pydantic
 
 # Training utilities
 scikit-learn
 pandas
 tqdm
 
-# Dataset download (used in preprocessing)
+# GEE integration (optional — only needed for main_gee.py and predict_gee.py)
+earthengine-api
+requests
+
+# Dataset download
 kaggle
