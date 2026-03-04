@@ -4,7 +4,7 @@ Sanchari V4 - GEE Diagnostics Utility (check_gee.py)
 
 Verifies the complete Google Earth Engine setup in four sequential steps:
     1. Credential file presence.
-    2. Project ID configuration (imported from main_gee_v4.py).
+    2. Project ID configuration (imported from src/main_gee.py).
     3. GEE initialisation.
     4. Data catalog access for NAIP, Sentinel-2, and Landsat.
 
@@ -12,8 +12,12 @@ Usage:
     python check_gee.py
 """
 
+import sys
 import ee
 import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(BASE_DIR, "src"))
 
 
 print("--- Google Earth Engine Diagnostics ---")
@@ -37,11 +41,11 @@ else:
 
 print("\n[2] Project configuration ...")
 try:
-    from main_gee_v4 import GEE_PROJECT
-    print(f"    Project ID imported from main_gee_v4.py: {GEE_PROJECT}")
+    from main_gee import GEE_PROJECT
+    print(f"    Project ID imported from src/main_gee.py: {GEE_PROJECT}")
 except ImportError:
     GEE_PROJECT = None
-    print("    Could not import from main_gee_v4.py. Falling back to None.")
+    print("    Could not import from src/main_gee.py. Falling back to None.")
 
 
 # ---------------------------------------------------------------------------

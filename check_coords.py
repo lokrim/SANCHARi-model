@@ -26,7 +26,8 @@ from prettytable import PrettyTable
 # Configuration
 # ---------------------------------------------------------------------------
 
-GEOTIFFS_DIR = "./geotiffs/"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+GEOTIFFS_DIR = os.path.join(BASE_DIR, "geotiffs")
 
 
 # ---------------------------------------------------------------------------

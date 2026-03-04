@@ -31,14 +31,14 @@
 
 ## 🧠 Technical Deep Dive
 
-### 1. Architecture: U-Net++ & EfficientNet-B4 (`model_v4.py`)
+### 1. Architecture: U-Net++ & EfficientNet-B4 (`model.py`)
 
 V4 uses a **U-Net++** decoder with an **EfficientNet-B4** encoder via `segmentation_models_pytorch`.
 
 - **EfficientNet-B4**: Compound-scaled backbone (depth × width × resolution) pretrained on ImageNet. Far richer feature representations than ResNet34 with comparable parameter efficiency (~19M params).
 - **U-Net++**: Replaces standard skip connections with *dense, nested* skip pathways between every encoder and decoder level. Reduces the semantic gap, preserving sub-pixel spatial detail critical for thin road extraction.
 
-### 2. Training Strategy (`train_v4.py` + `train_v4_lovasz.py`)
+### 2. Training Strategy (`train.py` + `train_lovasz.py`)
 
 **Phase 1 — Main Training (50 epochs):**
 - **ComboLoss**: `0.5 × DiceLoss + 0.5 × FocalLoss`
@@ -51,11 +51,11 @@ V4 uses a **U-Net++** decoder with an **EfficientNet-B4** encoder via `segmentat
 - Isolates the bottom 20% hardest samples (lowest IoU).
 - Fine-tunes exclusively on hard samples at LR=1e-5.
 
-**Phase 3 — Lovász Fine-Tuning (`train_v4_lovasz.py`, 20 epochs):**
+**Phase 3 — Lovász Fine-Tuning (`train_lovasz.py`, 20 epochs):**
 - Switches loss to `LovaszLoss` — directly optimizes the Jaccard index via convex surrogation.
 - Very conservative LR (1e-5) applied to the best ComboLoss checkpoint.
 
-### 3. Advanced Post-Processing Pipeline (`postprocess_v4.py`)
+### 3. Advanced Post-Processing Pipeline (`postprocess.py`)
 
 Raw segmentation masks are noisy. V4 applies a full **graph-theoretic refining pipeline**:
 
@@ -104,8 +104,8 @@ docker compose up sanchari-local-api    # Local API → port 8000
 
 **Running scripts via Docker:**
 ```bash
-docker compose run --rm cli python predict_gee_v4.py
-docker compose run --rm cli python train_v4.py
+docker compose run --rm cli python src/predict_gee.py
+docker compose run --rm cli python src/train.py
 ```
 
 ### 2. Preprocessing
@@ -113,20 +113,20 @@ docker compose run --rm cli python train_v4.py
 Download the DeepGlobe dataset from Kaggle and tile into 512×512 patches with 50% overlap:
 
 ```bash
-python preprocess_v4.py --download
+python src/preprocess.py --download
 ```
 
 ### 3. Training
 
 ```bash
 # Phase 1 — Main Training
-python train_v4.py
+python src/train.py
 
 # Phase 1 + Hard Negative Mining
-python train_v4.py --hard-mining
+python src/train.py --hard-mining
 
 # Phase 3 — Lovász Fine-Tuning (run after main training)
-python train_v4_lovasz.py
+python src/train_lovasz.py
 ```
 
 > Requires a GPU (RTX 3060+ recommended; tested on RTX 4090).
@@ -139,10 +139,10 @@ Fetches NAIP or Sentinel-2 imagery live — no local files needed.
 
 ```bash
 # Batch inference (10 random US city coordinates)
-python predict_gee_v4.py
+python src/predict_gee.py
 
 # Real-time API server
-python main_gee_v4.py --debug
+python src/main_gee.py --debug
 ```
 
 **Endpoint:** `POST /predict` on port **8001**
@@ -152,7 +152,7 @@ python main_gee_v4.py --debug
 
 Optional fields: `"collection"` (default: `USDA/NAIP/DOQQ`), `"zoom"` (default: `1.0` m/px scale).
 
-Outputs: images to `predicted/predictedv4/`, GeoJSON to `predicted/output-geojson/`.
+Outputs: images to `predicted/predicted/`, GeoJSON to `predicted/output-geojson/`.
 
 #### B. Local GeoTIFFs 🗺️
 
@@ -160,10 +160,10 @@ Place `.tif` files in `./geotiffs/`. The API auto-detects the file covering the 
 
 ```bash
 # Batch inference on test images
-python predict_v4.py --input test-images --output predictedv4
+python src/predict.py --input test-images --output predicted
 
 # Local API server
-python main_v4.py --debug
+python src/main.py --debug
 ```
 
 **Endpoint:** `POST /predict` on port **8000**
@@ -203,27 +203,26 @@ Both APIs return a **GeoJSON FeatureCollection** of polyline road segments (EPSG
 
 ```
 sanchari-model/
-├── model_v4.py              # U-Net++ + EfficientNet-B4 architecture
-├── preprocess_v4.py         # Dataset download + 512×512 tiling
-├── dataset_v4.py            # PyTorch Dataset + Albumentations augmentation
-├── train_v4.py              # Main training loop (ComboLoss + Hard Mining)
-├── train_v4_lovasz.py       # Lovász fine-tuning
-├── postprocess_v4.py        # Graph-theoretic post-processing (shared)
-├── predict_v4.py            # Local batch inference
-├── predict_gee_v4.py        # GEE batch inference
-├── main_v4.py               # Local GeoTIFF FastAPI server (port 8000)
-├── main_gee_v4.py           # GEE FastAPI server (port 8001)
-├── optimize_threshold_v4.py # Threshold optimization on validation set
+├── src/model.py              # U-Net++ + EfficientNet-B4 architecture
+├── src/preprocess.py         # Dataset download + 512×512 tiling
+├── src/dataset.py            # PyTorch Dataset + Albumentations augmentation
+├── src/train.py              # Main training loop (ComboLoss + Hard Mining)
+├── src/train_lovasz.py       # Lovász fine-tuning
+├── src/postprocess.py        # Graph-theoretic post-processing (shared)
+├── src/predict.py            # Local batch inference
+├── src/predict_gee.py        # GEE batch inference
+├── src/main.py               # Local GeoTIFF FastAPI server (port 8000)
+├── src/main_gee.py           # GEE FastAPI server (port 8001)
+├── src/optimize_threshold.py # Threshold optimization on validation set
 ├── check_coords.py          # Debug: verify coordinate → GeoTIFF mapping
 ├── check_gee.py             # Debug: verify GEE connectivity
-├── test_scripts_v4.py       # Automated pipeline validation tests
+├── src/test_scripts.py       # Automated pipeline validation tests
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
 ├── geotiffs/                # Local GeoTIFF files (user-supplied)
 ├── weights/                 # Trained model weights
-│   ├── best_model_v4.pth
-│   └── best_model_v4_lovasz.pth
+│   └── best_model_v4.pth
 ├── predicted/               # Inference outputs
 └── old-versions/            # V1, V2, V3 archived scripts
     ├── V1/
@@ -263,14 +262,14 @@ docker compose run --rm cli earthengine authenticate
 
 ## 🧪 Example API Requests
 
-**Local GeoTIFF API** (`main_v4.py` — port 8000):
+**Local GeoTIFF API** (`main.py` — port 8000):
 ```bash
 curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
   -d '{"latitude": 30.224949915094008, "longitude": -97.78460932372762}'
 ```
 
-**GEE API** (`main_gee_v4.py` — port 8001):
+**GEE API** (`main_gee.py` — port 8001):
 ```bash
 curl -X POST http://localhost:8001/predict \
   -H "Content-Type: application/json" \
