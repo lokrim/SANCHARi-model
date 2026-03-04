@@ -182,18 +182,19 @@ def graph_to_gdf(
     crs: str = "EPSG:3857"
 ) -> gpd.GeoDataFrame:
     """
-    Converts a cleaned sknw graph into a projected GeoDataFrame of LineStrings.
+    Converts a cleaned sknw graph into a WGS84 GeoDataFrame of LineStrings.
 
     Pixel-space coordinates stored in each edge's 'pts' array are transformed
-    to projected map coordinates using the provided affine transform.
+    to projected map coordinates using the provided affine transform, then
+    reprojected to EPSG:4326 (WGS84 lon/lat) so the result is valid GeoJSON.
 
     Args:
         graph     (nx.MultiGraph):         Cleaned road network graph.
         transform (rasterio.Affine):       Affine transform mapping pixels to CRS units.
-        crs       (str):                   Coordinate reference system (default EPSG:3857).
+        crs       (str):                   Source CRS of the affine transform (default EPSG:3857).
 
     Returns:
-        gpd.GeoDataFrame: GeoDataFrame with a single MultiLineString geometry.
+        gpd.GeoDataFrame: WGS84 GeoDataFrame with a single MultiLineString geometry.
                           Returns an empty GeoDataFrame if no edges remain.
     """
     lines = []
@@ -212,16 +213,19 @@ def graph_to_gdf(
             lines.append(LineString(line_coords))
 
     if not lines:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=crs)
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
 
     multiline = MultiLineString(lines)
     gdf = gpd.GeoDataFrame([{"name": "road_network"}], geometry=[multiline], crs=crs)
 
-    # Simplify geometry to reduce file size while preserving topology.
-    if crs.upper() == "EPSG:3857":
-        gdf["geometry"] = gdf["geometry"].simplify(tolerance=1.5, preserve_topology=True)
-    elif crs.upper() == "EPSG:4326":
-        gdf["geometry"] = gdf["geometry"].simplify(tolerance=0.00001, preserve_topology=True)
+    # Simplify in the source (projected) CRS first — tolerance in metres.
+    gdf["geometry"] = gdf["geometry"].simplify(tolerance=1.5, preserve_topology=True)
+
+    # Always reproject to WGS84 so callers receive valid GeoJSON lon/lat coordinates.
+    gdf = gdf.to_crs("EPSG:4326")
+
+    # Light simplification in degree units after reprojection (~1.5 m at equator).
+    gdf["geometry"] = gdf["geometry"].simplify(tolerance=0.000015, preserve_topology=True)
 
     return gdf
 

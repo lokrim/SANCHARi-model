@@ -32,6 +32,7 @@ import torch
 import cv2
 import pyproj
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from model_v4 import create_model_v4
@@ -98,6 +99,20 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# ---------------------------------------------------------------------------
+# CORS middleware
+# ---------------------------------------------------------------------------
+
+# Allow all origins in development. Restrict `allow_origins` to a specific
+# list of domains (e.g. ["https://yourdomain.com"]) before deploying to prod.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ---------------------------------------------------------------------------
