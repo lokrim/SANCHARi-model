@@ -10,7 +10,7 @@
 |:---:|
 | *Raw satellite input (DeepGlobe dataset)* |
 
-| ![V3 Prediction](predicted/embed/v3_pred_mask.png) | ![V3 Ground Truth](predicted/embed/v3_truth_mask.png) |
+| ![V3 Prediction](predicted/embed/v3_pred_mask.png) | ![V3 Ground Truth](predicted/embed/v2_truth_mask.png) |
 |:---:|:---:|
 | *V3 Predicted mask (~75% IoU)* | *Ground truth mask* |
 
@@ -43,10 +43,10 @@ Sliding Window (256×256 patches, stride=128 → 50% overlap)
    ┌────────────────────────────────────────────────────┐
    │  4-Way Test Time Augmentation (TTA)                │
    │  1. Original                                       │
-   │  2. Horizontal flip → predict → unflip            │
-   │  3. Vertical flip → predict → unflip              │
-   │  4. Rotate 90° → predict → unrotate              │
-   │  → Average all 4 probability maps                 │
+   │  2. Horizontal flip → predict → unflip             │
+   │  3. Vertical flip → predict → unflip               │
+   │  4. Rotate 90° → predict → unrotate                │
+   │  → Average all 4 probability maps                  │
    └────────────────────────────────────────────────────┘
        ↓
 Accumulate & average overlapping patch probabilities
