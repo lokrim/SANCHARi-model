@@ -10,6 +10,7 @@ import networkx as nx
 import geopandas as gpd
 from shapely.geometry import LineString, MultiLineString
 import rasterio
+from scipy.spatial import KDTree
 
 try:
     import sknw
@@ -46,6 +47,46 @@ def extract_edt_skeleton(prob_map: np.ndarray, thresh: float = 0.45, max_hole_si
 
     skeleton = skeletonize(binary_mask)
     return skeleton
+
+
+# ---------------------------------------------------------------------------
+# Step 1.5 — Graph gap closing
+# ---------------------------------------------------------------------------
+
+def connect_components(binary_mask: np.ndarray, max_dist: int = 25) -> np.ndarray:
+    """
+    Graph-based gap closing to connect broken road segments.
+    Uses skeleton endpoints and connection within max_dist.
+    """
+    binary_mask = binary_mask > 0
+    skeleton = skeletonize(binary_mask)
+    
+    # Kernel to find endpoints (1 neighbor in 3x3)
+    # Center pixel (10) + 1 neighbor (1) = 11
+    kernel = np.array([[1, 1, 1],
+                       [1, 10, 1],
+                       [1, 1, 1]], dtype=np.uint8)
+    
+    filtered = cv2.filter2D(skeleton.astype(np.uint8), -1, kernel)
+    
+    # Endpoints are where filtered == 11
+    endpoints_y, endpoints_x = np.where(filtered == 11)
+    endpoints = list(zip(endpoints_y, endpoints_x))
+    
+    if len(endpoints) < 2:
+        return binary_mask | skeleton
+    
+    # KDTree for fast neighbor lookup
+    tree = KDTree(endpoints)
+    connection_layer = np.zeros_like(binary_mask, dtype=np.uint8)
+    
+    pairs = tree.query_pairs(r=max_dist)
+    for i, j in pairs:
+        pt1 = endpoints[i]
+        pt2 = endpoints[j]
+        cv2.line(connection_layer, (pt1[1], pt1[0]), (pt2[1], pt2[0]), 1, 1)
+        
+    return binary_mask | skeleton | (connection_layer > 0)
 
 
 # ---------------------------------------------------------------------------
@@ -207,8 +248,22 @@ def graph_to_gdf(
             continue
 
         pts = data["pts"]
-        xs = pts[:, 1]
-        ys = pts[:, 0]
+        node_u = graph.nodes[u].get("o")
+        node_v = graph.nodes[v].get("o")
+
+        if node_u is not None and node_v is not None and len(pts) > 0:
+            dist_u_first = (pts[0][0] - node_u[0])**2 + (pts[0][1] - node_u[1])**2
+            dist_u_last = (pts[-1][0] - node_u[0])**2 + (pts[-1][1] - node_u[1])**2
+            
+            if dist_u_first <= dist_u_last:
+                full_pts = np.vstack([node_u, pts, node_v])
+            else:
+                full_pts = np.vstack([node_v, pts, node_u])
+        else:
+            full_pts = pts
+
+        xs = full_pts[:, 1]
+        ys = full_pts[:, 0]
         proj_xs, proj_ys = rasterio.transform.xy(transform, ys, xs)
 
         line_coords = list(zip(proj_xs, proj_ys))
@@ -298,11 +353,14 @@ def apply_advanced_postprocessing(
     except TypeError:
         binary_mask = remove_small_holes(binary_mask, area_threshold=400)
 
+    # Stage 2.5: Connect Components (Graph Gap Closing)
+    connected_mask = connect_components(binary_mask, max_dist=25)
+
     # Stage 3: Remove small noise objects.
     try:
-        cleaned_mask = remove_small_objects(binary_mask, max_size=100)
+        cleaned_mask = remove_small_objects(connected_mask, max_size=100)
     except TypeError:
-        cleaned_mask = remove_small_objects(binary_mask, min_size=100)
+        cleaned_mask = remove_small_objects(connected_mask, min_size=100)
 
     # Stage 4: Morphological closing to smooth edges before skeletonisation.
     final_mask = closing(cleaned_mask, disk(3))
