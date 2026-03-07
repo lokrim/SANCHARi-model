@@ -22,3 +22,4 @@ networkx
 shapely
 geopandas
 sknw
+requests

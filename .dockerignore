@@ -1,0 +1,33 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.venv
+venv
+
+# Large data / artifacts (mounted as volumes instead)
+geotiffs/
+predicted/
+test-images/
+weights/
+ipynb/
+
+# IDE / OS
+.vscode
+.idea
+*.swp
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Docs
+README.md

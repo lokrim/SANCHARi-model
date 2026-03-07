@@ -1,62 +1,80 @@
 services:
   sanchari-gee-api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: sanchari-model:v4
     volumes:
       - ./geotiffs:/app/geotiffs
       - ./predicted:/app/predicted
-      # Mac/Linux credential paths:
-      - ~/.kaggle:/root/.kaggle
-      - ~/.config/earthengine:/root/.config/earthengine
-      # Windows credential paths (Uncomment below and comment out Mac/Linux above):
-      # - /c/Users/YOUR_USERNAME/.kaggle:/root/.kaggle
-      # - /c/Users/YOUR_USERNAME/.config/earthengine:/root/.config/earthengine
+      - ./weights:/app/weights:ro
+      # ── Credentials ──
+      # Mac/Linux:
+      # - ~/.kaggle:/root/.kaggle:ro
+      # - ~/.config/earthengine:/root/.config/earthengine
+      # Windows (replace AHAMED with your username):
+      - C:/Users/AHAMED/.kaggle:/root/.kaggle:ro
+      - C:/Users/AHAMED/.config/earthengine:/root/.config/earthengine
     ports:
       - "8001:8001"
     command: uvicorn src.main_gee:app --host 0.0.0.0 --port 8001
-    # Uncomment the following to enable GPU support (requires nvidia-container-toolkit)
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+    # GPU support (requires nvidia-container-toolkit / Docker Desktop WSL2 + NVIDIA drivers)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   sanchari-local-api:
-    build: .
     image: sanchari-model:v4
+    depends_on:
+      sanchari-gee-api:
+        condition: service_started
     volumes:
       - ./geotiffs:/app/geotiffs
       - ./predicted:/app/predicted
+      - ./weights:/app/weights:ro
+      # ── Credentials ──
+      # Mac/Linux:
+      # - ~/.kaggle:/root/.kaggle:ro
+      # - ~/.config/earthengine:/root/.config/earthengine
+      # Windows (replace AHAMED with your username):
+      - C:/Users/AHAMED/.kaggle:/root/.kaggle:ro
+      - C:/Users/AHAMED/.config/earthengine:/root/.config/earthengine
     ports:
       - "8000:8000"
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   cli:
-    build: .
     image: sanchari-model:v4
+    depends_on:
+      sanchari-gee-api:
+        condition: service_started
     volumes:
       - ./geotiffs:/app/geotiffs
       - ./predicted:/app/predicted
-      # Mac/Linux credential paths:
-      - ~/.kaggle:/root/.kaggle
-      - ~/.config/earthengine:/root/.config/earthengine
-      # Windows credential paths (Uncomment below and comment out Mac/Linux above):
-      # - /c/Users/YOUR_USERNAME/.kaggle:/root/.kaggle
-      # - /c/Users/YOUR_USERNAME/.config/earthengine:/root/.config/earthengine
-    # Intended to be run manually, e.g.: docker compose run cli python src/predict_gee.py
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+      - ./weights:/app/weights           # read-write — training writes checkpoints here
+      - ./data:/app/data                 # read-write — preprocessing writes tiles here
+      # ── Credentials ──
+      # Mac/Linux:
+      # - ~/.kaggle:/root/.kaggle:ro
+      # - ~/.config/earthengine:/root/.config/earthengine
+      # Windows (replace AHAMED with your username):
+      - C:/Users/AHAMED/.kaggle:/root/.kaggle:ro
+      - C:/Users/AHAMED/.config/earthengine:/root/.config/earthengine
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

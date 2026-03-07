@@ -80,7 +80,7 @@ All four inference scripts share the same strategy:
 
 ## 🛠️ Usage Guide
 
-### 1. Setup
+### 1. Local Setup (No Docker)
 
 ```bash
 git clone https://github.com/lokrim/sanchari-model.git
@@ -88,24 +88,126 @@ cd sanchari-model
 pip install -r requirements.txt
 ```
 
-### 1B. Docker Setup (Recommended)
+### 2. Docker Setup (Recommended)
 
-```bash
-docker compose build
+Docker packages everything — CUDA, Python, all dependencies — into one image (~6 GB). No local Python setup needed.
+
+**Prerequisites:**
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) with **WSL 2** backend (Windows) or Docker Engine (Mac/Linux)
+- For GPU: NVIDIA drivers installed + Docker Desktop WSL 2 integration enabled (Windows) or `nvidia-container-toolkit` (Linux)
+
+#### Step 1 — Configure credential paths
+
+Edit `docker-compose.yml` volume mounts for your OS:
+
+**Windows** (default — replace `AHAMED` with your Windows username):
+```yaml
+- C:/Users/AHAMED/.kaggle:/root/.kaggle:ro
+- C:/Users/AHAMED/.config/earthengine:/root/.config/earthengine
 ```
 
-> `docker-compose.yml` auto-mounts `~/.kaggle` and `~/.config/earthengine` for credentials. Uncomment the `deploy` block for GPU support.
-
-**Running APIs via Docker:**
-```bash
-docker compose up sanchari-gee-api      # GEE API  → port 8001
-docker compose up sanchari-local-api    # Local API → port 8000
+**Mac/Linux** (uncomment these, comment out the Windows lines):
+```yaml
+- ~/.kaggle:/root/.kaggle:ro
+- ~/.config/earthengine:/root/.config/earthengine
 ```
 
-**Running scripts via Docker:**
+#### Step 2 — Kaggle credentials (one-time)
+
+Download `kaggle.json` from [kaggle.com/settings](https://www.kaggle.com/settings) → "Create New Token", then place it:
+
+| OS | Path |
+|:---|:---|
+| Windows | `C:\Users\<USERNAME>\.kaggle\kaggle.json` |
+| Mac/Linux | `~/.kaggle/kaggle.json` |
+
+#### Step 3 — Build the image
+
 ```bash
-docker compose run --rm cli python src/predict_gee.py
+docker compose build sanchari-gee-api
+```
+
+This builds once and tags the image as `sanchari-model:v4`. All three services share the same image (~6 GB).
+
+#### Step 4 — Authenticate Google Earth Engine (one-time)
+
+```
+docker run --rm -it -v C:/Users/AHAMED/.config/earthengine:/root/.config/earthengine sanchari-model:v4 earthengine authenticate --auth_mode=notebook
+```
+
+> **Mac/Linux:** Replace the `-v` path with `~/.config/earthengine:/root/.config/earthengine`
+
+This opens a browser-based OAuth flow:
+1. Click the URL printed in the terminal
+2. Sign in with your Google account
+3. Copy the verification code back into the terminal
+
+Credentials are saved to your host machine and automatically mounted into all containers.
+
+#### Step 5 — Verify everything works
+
+```bash
+# Verify GEE credentials
+docker compose run --rm cli python check_gee.py
+
+# Verify GPU is detected
+docker compose run --rm cli python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+#### Running APIs
+
+```bash
+# GEE API → port 8001 (fetches satellite imagery live from Google Earth Engine)
+docker compose up sanchari-gee-api
+
+# Local GeoTIFF API → port 8000 (uses .tif files in ./geotiffs/)
+docker compose up sanchari-local-api
+
+# Both APIs simultaneously
+docker compose up sanchari-gee-api sanchari-local-api
+```
+
+#### Running Scripts
+
+```bash
+# Download dataset and preprocess into 512×512 tiles
+docker compose run --rm cli python src/preprocess.py --download
+
+# Training (Phase 1 — ComboLoss, 50 epochs)
 docker compose run --rm cli python src/train.py
+
+# Training with hard negative mining
+docker compose run --rm cli python src/train.py --hard-mining
+
+# Lovász fine-tuning (run after main training)
+docker compose run --rm cli python src/train_lovasz.py
+
+# Batch inference via GEE (10 random US city coordinates)
+docker compose run --rm cli python src/predict_gee.py
+
+# Batch inference on local test images
+docker compose run --rm cli python src/predict.py --input test-images --output predicted/predicted
+
+# Optimize binarisation threshold
+docker compose run --rm cli python src/optimize_threshold.py
+
+# Run unit tests
+docker compose run --rm cli python -m pytest src/test_scripts.py -v
+
+# Check coordinate → GeoTIFF coverage
+docker compose run --rm cli python check_coords.py 30.2672 -97.7431
+
+# Interactive shell inside the container
+docker compose run --rm cli bash
+```
+
+#### Docker Disk Usage & Cleanup
+
+The image is ~6 GB. To reclaim space:
+```bash
+docker builder prune -a -f    # Clear build cache
+docker system prune -a         # Remove all unused images + containers
+docker system df               # Check current disk usage
 ```
 
 ### 2. Preprocessing
@@ -214,8 +316,9 @@ sanchari-model/
 ├── src/main.py               # Local GeoTIFF FastAPI server (port 8000)
 ├── src/main_gee.py           # GEE FastAPI server (port 8001)
 ├── src/optimize_threshold.py # Threshold optimization on validation set
-├── check_coords.py          # Debug: verify coordinate → GeoTIFF mapping
-├── check_gee.py             # Debug: verify GEE connectivity
+├── check_api.py              # Debug: verify api works with requests
+├── check_coords.py           # Debug: verify coordinate → GeoTIFF mapping
+├── check_gee.py              # Debug: verify GEE connectivity
 ├── src/test_scripts.py       # Automated pipeline validation tests
 ├── Dockerfile
 ├── docker-compose.yml
@@ -232,16 +335,22 @@ sanchari-model/
 
 ---
 
-## 🔑 Handling Credentials on a New Machine
+## 🔑 Credentials Reference
 
-**Authenticate GEE:**
+| Credential | Location (Windows) | Location (Mac/Linux) | Purpose |
+|:---|:---|:---|:---|
+| Kaggle API key | `C:\Users\<USERNAME>\.kaggle\kaggle.json` | `~/.kaggle/kaggle.json` | Dataset download |
+| GEE OAuth token | `C:\Users\<USERNAME>\.config\earthengine\credentials` | `~/.config/earthengine/credentials` | Satellite imagery access |
+
+**Re-authenticate GEE (if token expires):**
 ```bash
-docker compose run --rm cli earthengine authenticate
+docker run --rm -it \
+  -v C:/Users/AHAMED/.config/earthengine:/root/.config/earthengine \
+  sanchari-model:v4 \
+  earthengine authenticate --auth_mode=notebook
 ```
 
-**Kaggle credentials:** Place your `kaggle.json` at `~/.kaggle/kaggle.json` before running preprocessing.
-
-**Windows users:** Update the volume mount paths in `docker-compose.yml` — replace the Mac/Linux paths with your Windows username paths (e.g., `C:/Users/YourName/.kaggle`).
+> **Mac/Linux:** Replace the `-v` path with `~/.config/earthengine:/root/.config/earthengine`
 
 ---
 
@@ -264,16 +373,12 @@ docker compose run --rm cli earthengine authenticate
 
 **Local GeoTIFF API** (`main.py` — port 8000):
 ```bash
-curl -X POST http://localhost:8000/predict \
-  -H "Content-Type: application/json" \
-  -d '{"latitude": 30.224949915094008, "longitude": -97.78460932372762}'
+curl -X POST http://localhost:8000/predict -H "Content-Type: application/json" -d "{\"latitude\":30.224949915094008,\"longitude\":-97.78460932372762}"
 ```
 
 **GEE API** (`main_gee.py` — port 8001):
 ```bash
-curl -X POST http://localhost:8001/predict \
-  -H "Content-Type: application/json" \
-  -d '{"latitude": 34.09452, "longitude": -118.27286}'
+curl -X POST http://localhost:8001/predict -H "Content-Type: application/json" -d "{\"latitude\":34.09452,\"longitude\":-118.27286}"
 ```
 
 Both return a GeoJSON FeatureCollection of the road network.
