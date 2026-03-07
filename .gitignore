@@ -1,0 +1,113 @@
+# ──────────────────────────────────────────────
+# Python
+# ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.installed.cfg
+MANIFEST
+
+# ──────────────────────────────────────────────
+# Virtual Environments
+# ──────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# ──────────────────────────────────────────────
+# Environment Variables & Secrets
+# ──────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+service_account*.json
+gee_credentials*.json
+
+# ──────────────────────────────────────────────
+# Jupyter Notebooks
+# ──────────────────────────────────────────────
+ipynb/.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ──────────────────────────────────────────────
+# ML / Model Artifacts
+# ──────────────────────────────────────────────
+# Keep the weights/ directory but ignore large checkpoint files
+weights/*.pt
+weights/*.ckpt
+weights/*.bin
+weights/*.h5
+weights/*.onnx
+*.pt
+*.ckpt
+*.safetensors
+
+# ──────────────────────────────────────────────
+# Data & Output Directories
+# ──────────────────────────────────────────────
+
+datasets/
+runs/
+logs/
+*.log
+
+# ──────────────────────────────────────────────
+# Docker
+# ──────────────────────────────────────────────
+# Keep Dockerfile and docker-compose.yml tracked
+# Ignore generated docker artefacts
+docker-compose.override.yml
+
+# ──────────────────────────────────────────────
+# macOS
+# ──────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ──────────────────────────────────────────────
+# IDEs & Editors
+# ──────────────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# ──────────────────────────────────────────────
+# Testing & Coverage
+# ──────────────────────────────────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+nosetests.xml
+test-results/
+
+# ──────────────────────────────────────────────
+# Misc
+# ──────────────────────────────────────────────
+*.bak
+*.tmp
+*.temp
+*.orig
+Thumbs.db
