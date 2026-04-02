@@ -44,7 +44,7 @@ from postprocess import apply_advanced_postprocessing, graph_to_gdf, export_to_g
 # Configuration
 # ---------------------------------------------------------------------------
 
-GEOTIFFS_DIR = "./geotiffs/"
+GEOTIFFS_DIR = os.path.join(BASE_DIR, "geotiffs")
 MODEL_PATH   = os.path.join(BASE_DIR, "weights/best_model_v4.pth")
 DEBUG_DIR    = os.path.join(BASE_DIR, "predicted/predicted")
 WINDOW_SIZE  = 1024   # Size (pixels) of the image crop read from the GeoTIFF.
@@ -132,7 +132,8 @@ def find_geotiff_for_coords(lon, lat):
     Returns:
         str or None: Path to the matching GeoTIFF.
     """
-    for tif_path in glob.glob(os.path.join(GEOTIFFS_DIR, "*.tif")):
+    tiff_files = glob.glob(os.path.join(GEOTIFFS_DIR, "*.tif")) + glob.glob(os.path.join(GEOTIFFS_DIR, "*.tiff"))
+    for tif_path in tiff_files:
         with rasterio.open(tif_path) as src:
             transformer = pyproj.Transformer.from_crs("epsg:4326", src.crs, always_xy=True)
             x, y = transformer.transform(lon, lat)
